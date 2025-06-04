@@ -21,19 +21,54 @@
 ## 🏗️ Architecture
 
 ```
-[Cardano Node] → [gouroboros] → [Sequential Processor] → [TiDB Cluster] → [APIs/Analytics]
-                                        ↓
-                            [Block/BlockHeader Handler]
-                                        ↓
-                              [Sequential Transaction Processing]
-                                        ↓
-                              [Direct Database Writes] → [TiDB]
+[Public Relays] → [Local Cardano Node] → [Socket] → [Nectar] → [Sequential Processor] → [TiDB]
+      ↓                    ↓                           ↓
+[IOG/CF Relays]     [Community Relays]         [Block/BlockHeader Handler]
+[9 Global Nodes]    [Geographic Distribution]         ↓
+                                              [Sequential Transaction Processing]
+                                                        ↓
+                                              [Direct Database Writes]
 ```
 
+- **Public Relays**: Connected to 3 official IOG/CF relays + 6 community pool relays globally distributed
+- **Local Cardano Node**: Full node providing socket interface for Nectar
 - **gouroboros**: Official Cardano protocol implementation
 - **Sequential Processing**: One block at a time for maximum accuracy
 - **TiDB**: Distributed SQL database for scalability and real-time analytics
 - **Complete Schema**: 107 tables covering all Cardano features including governance
+
+## 🌐 Network Connectivity
+
+### **Relay Infrastructure**
+Nectar connects through a local Cardano node to a globally distributed network of public relays:
+
+**Official Bootstrap Relays:**
+- `backbone.cardano.iog.io:3001` (IOG Official)
+- `backbone.mainnet.emurgornd.com:3001` (EMURGO)
+- `backbone.mainnet.cardanofoundation.org:3001` (Cardano Foundation)
+
+**Community Pool Relays:**
+- `208.118.69.126:3003` (PSB Pool - Edmonton, Canada)
+- `node-dus.poolunder.com:6900` (UNDR Pool - Düsseldorf, Germany)
+- `node-syd.poolunder.com:6900` (UNDR Pool - Sydney, Australia)
+- `148.72.153.168:16000` (AAA Pool - St. Louis, USA)
+- `154.26.154.254:16000` (AAA Pool - Australia)
+- `relay1-pub.ahlnet.nu:2111` (AHL Pool - Malmö, Sweden)
+- `relay2-pub.ahlnet.nu:2111` (AHL Pool - Malmö, Sweden)
+- `relay1.clio.one:6010` (CLIO Pool - Milan, Italy)
+- `relay2.clio.one:6010` (CLIO Pool - Bolzano, Italy)
+
+**Connection Strategy:**
+- **Hot Valency**: 5 active connections maintained
+- **Warm Valency**: 9 warm connections for redundancy
+- **Geographic Distribution**: North America, Europe, Australia
+- **Redundancy**: Multiple relays per region for reliability
+
+### **Socket Detection**
+Nectar automatically detects and connects to available Cardano node sockets:
+- `/opt/cardano/cnode/sockets/node.socket` (primary)
+- `/root/workspace/cardano-node-guild/socket/node.socket` (guild tools)
+- Environment variable override: `CARDANO_NODE_SOCKET`
 
 ## 🚀 Features
 
@@ -154,11 +189,23 @@ go build -o nectar main.go
 
 ### Environment Variables
 ```bash
-# Optional - auto-detection works for most setups
-CARDANO_NODE_SOCKET="/path/to/node.socket"
+# Socket path (auto-detected if not specified)
+CARDANO_NODE_SOCKET="/opt/cardano/cnode/sockets/node.socket"
 
 # Database connection (TiDB default)
 TIDB_DSN="root@tcp(localhost:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local"
+```
+
+### Network Requirements
+```bash
+# Ensure local Cardano node is running and connected to public relays
+sudo systemctl status cardano-node
+
+# Verify socket accessibility
+ls -la /opt/cardano/cnode/sockets/node.socket
+
+# Check relay connections
+netstat -tuln | grep 6000
 ```
 
 ### Processing Configuration
