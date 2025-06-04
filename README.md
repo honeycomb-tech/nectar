@@ -2,21 +2,12 @@
 
 **Nectar** is a **high-accuracy** Cardano blockchain indexer built in Go, designed for **100% data accuracy** and **reliable sequential processing**. Uses gouroboros for block ingestion and TiDB for distributed storage, with a sequential processing architecture aligned with the reference implementation.
 
-## 🎯 ACCURACY-FIRST DESIGN
+## 📊 Performance
 
-**Current Performance Metrics:**
 - **Sustained Rate**: 544+ blocks/sec
-- **Peak Performance**: 1,000+ blocks/sec
+- **Peak Performance**: 1,000+ blocks/sec  
 - **Architecture**: Sequential processing (gouroboros-aligned)
 - **Accuracy**: 100% (no race conditions, no dropped blocks)
-- **Error Rate**: 0% processing failures
-
-**Design Philosophy:**
-- **Accuracy over Speed**: Sequential processing ensures data integrity
-- **Gouroboros Alignment**: Matches reference implementation patterns
-- **BlockHeader Support**: Handles both Block and BlockHeader types
-- **Era Boundary Precision**: Correct era transitions with no gaps
-- **Production Ready**: Robust error handling and monitoring
 
 ## 🏗️ Architecture
 
@@ -47,22 +38,11 @@ Nectar connects through a local Cardano node to a globally distributed network o
 - `backbone.mainnet.emurgornd.com:3001` (EMURGO)
 - `backbone.mainnet.cardanofoundation.org:3001` (Cardano Foundation)
 
-**Community Pool Relays:**
-- `208.118.69.126:3003` (PSB Pool - Edmonton, Canada)
-- `node-dus.poolunder.com:6900` (UNDR Pool - Düsseldorf, Germany)
-- `node-syd.poolunder.com:6900` (UNDR Pool - Sydney, Australia)
-- `148.72.153.168:16000` (AAA Pool - St. Louis, USA)
-- `154.26.154.254:16000` (AAA Pool - Australia)
-- `relay1-pub.ahlnet.nu:2111` (AHL Pool - Malmö, Sweden)
-- `relay2-pub.ahlnet.nu:2111` (AHL Pool - Malmö, Sweden)
-- `relay1.clio.one:6010` (CLIO Pool - Milan, Italy)
-- `relay2.clio.one:6010` (CLIO Pool - Bolzano, Italy)
+**Community Pool Relays:** 6 globally distributed community pool relays
 
 **Connection Strategy:**
-- **Hot Valency**: 5 active connections maintained
-- **Warm Valency**: 9 warm connections for redundancy
-- **Geographic Distribution**: North America, Europe, Australia
-- **Redundancy**: Multiple relays per region for reliability
+- 5 active connections + 9 warm backups
+- Geographic distribution: North America, Europe, Australia
 
 ### **Socket Detection**
 Nectar automatically detects and connects to available Cardano node sockets:
@@ -73,23 +53,19 @@ Nectar automatically detects and connects to available Cardano node sockets:
 ## 🚀 Features
 
 ### ✅ **Current Capabilities**
-- **Sequential Processing**: Gouroboros-aligned architecture for 100% accuracy
-- **BlockHeader Support**: Handles both full blocks and block headers seamlessly
-- **Correct Era Boundaries**: Precise era transitions with no off-by-one errors
-- **Smart Resuming**: Intelligent intersection point selection for efficient restarts
-- **Complete GORM Models**: All 107 tables from comprehensive migration files
-- **Multi-Era Support**: Byron, Shelley, Allegra, Mary, Alonzo, Babbage, Conway
-- **TiDB Integration**: Optimized for distributed SQL with sharding and clustering
-- **gouroboros Integration**: Latest Cardano protocol client
-- **Robust Error Handling**: Comprehensive error tracking and recovery
+- Sequential processing (gouroboros-aligned)
+- BlockHeader support for all block types
+- Correct era boundaries and smart resuming
+- Complete GORM models (107 tables)
+- Multi-era support (Byron through Conway)
+- TiDB integration with comprehensive error handling
 
-### 🎯 **Accuracy Optimizations**
-- **Sequential Processing**: No race conditions or dropped blocks
-- **Transaction Isolation**: Each block processed in its own database transaction
-- **Era Precision**: Correct era boundary handling aligned with chain history
-- **Smart Connection**: Node-to-Node with BlockFetch support, fallback to Node-to-Client
-- **Error Recovery**: Graceful handling of network issues and node disconnections
-- **Activity Monitoring**: Real-time processing logs and error statistics
+### ✅ **Key Features**
+- Sequential processing for 100% accuracy
+- BlockHeader support for all sync scenarios
+- Correct era boundary handling
+- Smart connection with automatic fallback
+- Real-time monitoring and error tracking
 
 ### 🎯 **Governance Focus** (CIP-1694)
 - **Voting Procedures**: Real-time voting data with role-based filtering
@@ -98,12 +74,7 @@ Nectar automatically detects and connects to available Cardano node sockets:
 - **Governance Actions**: Proposals, treasury withdrawals, parameter changes
 - **Off-chain Data**: Metadata, anchors, and external references
 
-### ⚡ **Performance Advantages**
-- **Reliable Speed**: Consistent 544+ blocks/sec with no data loss
-- **TiDB HTAP**: Real-time analytics on live transaction data
-- **Horizontal Scaling**: Linear scaling with additional TiDB nodes
-- **Efficient Processing**: Optimized sequential design
-- **Optimized Queries**: Custom indexes for governance and staking data
+
 
 ## 📁 Project Structure
 
@@ -245,17 +216,10 @@ const (
 
 ## 🔄 Sync Modes
 
-### Bulk Sync (Historical Data)
-- **Mode**: BlockFetch with gouroboros
-- **Speed**: 544+ blocks/sec sustained
-- **Use Case**: Initial sync from genesis or resume point
-- **Transition**: Automatic switch to real-time when near tip
+**Bulk Sync**: BlockFetch mode for historical data (544+ blocks/sec)
+**Real-time Sync**: ChainSync mode for live data (200-400 blocks/sec)
 
-### Real-time Sync (Live Data)
-- **Mode**: ChainSync with gouroboros
-- **Speed**: 200-400 blocks/sec (real-time processing)
-- **Use Case**: Live blockchain monitoring
-- **Features**: Rollback handling, immediate transaction processing
+Automatic transition from bulk to real-time when approaching chain tip.
 
 ## 🧪 Testing & Validation
 
@@ -292,53 +256,14 @@ tail -f nectar.log | grep -E "(📦|📋|blocks/sec)"
 curl http://localhost:8080/api/errors
 ```
 
-## 🚧 Development Roadmap
-
-### Phase 1: ✅ Foundation (COMPLETE)
-- [x] Sequential processing architecture
-- [x] BlockHeader support implementation
-- [x] Correct era boundary handling
-- [x] Complete GORM models (107 tables)
-- [x] TiDB integration and migrations
-- [x] gouroboros alignment
-
-### Phase 2: 🔄 Enhanced Processing (IN PROGRESS)
-- [ ] **Transaction Input/Output Processing** - Complete relationship mapping
-- [ ] **Multi-Asset Support** - Native token tracking and minting
-- [ ] **Smart Contract Data** - Scripts, datums, redeemers processing
-- [ ] **Checkpoint Management** - Advanced resume capabilities
-- [ ] **API Development** - REST endpoints for data access
-
-### Phase 3: 🎯 Governance Features
-- [ ] **CIP-1694 Processing** - Complete governance transaction parsing
-- [ ] **DRep Analytics** - Real-time delegation tracking
-- [ ] **Committee Tracking** - Constitutional committee operations
-- [ ] **Treasury Analytics** - Proposal and withdrawal monitoring
-- [ ] **Off-chain Integration** - Metadata fetching and validation
-
-### Phase 4: 📈 Production Scale
-- [ ] **Performance Optimization** - Era-specific processing enhancements
-- [ ] **TiDB Clustering** - Multi-node production deployment
-- [ ] **Monitoring Stack** - Prometheus/Grafana integration
-- [ ] **Backup & Recovery** - Data protection strategies
-- [ ] **Load Testing** - Sustained performance validation
 
 ## 🔍 Monitoring & Observability
 
 ### Built-in Dashboard
-- **Real-time Performance**: Blocks/sec, era progress, memory usage
-- **Activity Feed**: Live block processing events
-- **Error Monitor**: Comprehensive error tracking and statistics
-- **Progress Tracking**: Era-by-era sync progress visualization
+Real-time performance metrics, activity feed, error monitoring, and era progress tracking.
 
 ### TiDB Integration
-- **URL**: http://localhost:2379/dashboard
-- **Features**: Query analysis, performance monitoring, cluster status
-
-### Error Handling
-- **Activity Logging**: All block processing events tracked
-- **Error Statistics**: Categorized error counting and reporting
-- **Recovery Mechanisms**: Automatic retry and graceful degradation
+Access TiDB dashboard at http://localhost:2379/dashboard for query analysis and cluster monitoring.
 
 ## 🚀 Deployment
 
@@ -369,19 +294,6 @@ docker-compose -f docker-compose.prod.yml up -d
 watch -n 5 "mysql -h127.0.0.1 -P4000 -uroot -e 'SELECT COUNT(*) as blocks FROM nectar.blocks'"
 ```
 
-## 🏆 Key Achievements
-
-### vs. Complex Indexers
-- ✅ **100% Accuracy**: Sequential processing eliminates race conditions
-- ✅ **Gouroboros Aligned**: Matches reference implementation exactly
-- ✅ **Production Ready**: Robust error handling and monitoring
-- ✅ **Maintainable**: Simple, debuggable architecture
-
-### vs. Performance-Only Solutions
-- ✅ **Reliability**: Consistent performance without data loss
-- ✅ **Error Recovery**: Graceful handling of network issues
-- ✅ **Data Integrity**: Every block processed and verified
-- ✅ **Real-time Monitoring**: Complete visibility into processing state
 
 ## 📚 Resources
 
