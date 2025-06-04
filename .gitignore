@@ -1,0 +1,88 @@
+# Nectar Cardano Indexer - Git Ignore
+
+# Binaries
+nectar
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+go.work
+
+# Dependency directories
+vendor/
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Logs
+logs/
+*.log
+nohup.out
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker volumes and data
+docker-data/
+data/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Configuration overrides
+config/local.yml
+config/production.yml
+
+# Demeter CLI (if not using tools directory)
+dmtrctl*
+
+# TiDB data directories (if using local storage)
+tidb-data/
+tikv-data/
+pd-data/
+
+# Monitoring data
+prometheus-data/
+grafana-data/
+
+# Build artifacts
+dist/
+build/
+
+# Coverage reports
+coverage.out
+coverage.html
+
+# Test artifacts
+test-results/
+
+# Local development overrides
+docker-compose.override.yml
+docker-compose.local.yml 
