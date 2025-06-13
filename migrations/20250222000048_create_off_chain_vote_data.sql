@@ -8,5 +8,5 @@ CREATE TABLE off_chain_vote_data (
     bytes BLOB NOT NULL,
     warning VARCHAR(255),
     is_valid BOOLEAN,
-    FOREIGN KEY (voting_anchor_id) REFERENCES voting_anchor (id)
+    FOREIGN KEY (voting_anchor_id) REFERENCES voting_anchors (id)
 );

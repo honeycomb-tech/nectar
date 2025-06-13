@@ -3,13 +3,13 @@ package database
 import (
 	"fmt"
 	"log"
+	"nectar/errors"
 	"nectar/models"
 	"os"
 	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 const (
@@ -27,7 +27,7 @@ func InitTiDB() (*gorm.DB, error) {
 
 	// First, connect without specifying a database (via HAProxy load balancer)
 	baseDB, err := gorm.Open(mysql.Open(baseDSN), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: errors.NewGormLogger(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to TiDB cluster via load balancer: %w", err)
@@ -52,15 +52,7 @@ func InitTiDB() (*gorm.DB, error) {
 	}
 
 	db, err := gorm.Open(mysql.Open(nectarDSN), &gorm.Config{
-		Logger: logger.New(
-			log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
-			logger.Config{
-				SlowThreshold:             time.Second, // Slow SQL threshold
-				LogLevel:                  logger.Warn, // Log level
-				IgnoreRecordNotFoundError: true,        // Ignore ErrRecordNotFound error for logger
-				Colorful:                  false,       // Disable color
-			},
-		),
+		Logger: errors.NewGormLogger(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to nectar database: %w", err)
@@ -72,11 +64,18 @@ func InitTiDB() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to get underlying sql.DB: %w", err)
 	}
 
-	// Configure connection pool for high-performance indexing with load-balanced TiDB cluster
-	sqlDB.SetMaxIdleConns(100)                 // Increased for load-balanced cluster
-	sqlDB.SetMaxOpenConns(400)                 // Increased for distributed TiDB servers
-	sqlDB.SetConnMaxLifetime(2 * time.Hour)    // Longer lifetime for stable connections
-	sqlDB.SetConnMaxIdleTime(30 * time.Minute) // Reasonable idle timeout
+	// Phase 1 Optimization: Configure connection pool for high-performance indexing
+	// These settings are optimized for TiDB's distributed nature and bulk operations
+	sqlDB.SetMaxIdleConns(200)                 // Increased from 100 for better connection reuse
+	sqlDB.SetMaxOpenConns(800)                 // Increased from 400 for higher concurrency
+	sqlDB.SetConnMaxLifetime(4 * time.Hour)    // Increased from 2h for stable long-running connections
+	sqlDB.SetConnMaxIdleTime(1 * time.Hour)    // Increased from 30m to reduce connection churn
+
+	// Phase 1 Optimization: Enable TiDB-specific optimizations
+	if err := enableTiDBOptimizations(db); err != nil {
+		log.Printf("Warning: failed to enable some TiDB optimizations: %v", err)
+		// Continue anyway as these are optional optimizations
+	}
 
 	log.Println("TiDB cluster connection established via HAProxy load balancer with performance optimizations")
 	return db, nil
@@ -141,12 +140,14 @@ func handleTiDBMigration(db *gorm.DB) error {
 
 	// Staking models
 	stakingModels := []interface{}{
-		&models.PoolMetadataRef{}, // Must come before PoolUpdate
+		&models.PoolMetadataRef{}, // Must come before PoolUpdate and off-chain pool models
 		&models.PoolUpdate{},      // References PoolMetadataRef
 		&models.PoolRelay{},
 		&models.PoolRetire{},
 		&models.PoolOwner{},
 		&models.PoolStat{},
+		&models.OffChainPoolData{},      // Pool-related off-chain data (references PoolHash, PoolMetadataRef)
+		&models.OffChainPoolFetchError{}, // Pool metadata fetch errors (references PoolHash, PoolMetadataRef)
 		&models.StakeRegistration{},
 		&models.StakeDeregistration{},
 		&models.Delegation{},
@@ -183,10 +184,8 @@ func handleTiDBMigration(db *gorm.DB) error {
 		&models.PotTransfer{},
 	}
 
-	// Off-chain models
+	// Off-chain models (vote-related only, pool models moved to staking section)
 	offChainModels := []interface{}{
-		&models.OffChainPoolData{},
-		&models.OffChainPoolFetchError{},
 		&models.OffChainVoteData{},
 		&models.OffChainVoteGovActionData{},
 		&models.OffChainVoteDRepData{},
@@ -298,9 +297,9 @@ func applyTiDBOptimizations(db *gorm.DB) error {
 	// Apply sharding for high-volume tables
 	shardingQueries := []string{
 		"ALTER TABLE blocks SHARD_ROW_ID_BITS = 4",
-		"ALTER TABLE tx SHARD_ROW_ID_BITS = 6",
-		"ALTER TABLE tx_out SHARD_ROW_ID_BITS = 8",
-		"ALTER TABLE tx_in SHARD_ROW_ID_BITS = 8",
+		"ALTER TABLE txes SHARD_ROW_ID_BITS = 6",
+		"ALTER TABLE tx_outs SHARD_ROW_ID_BITS = 8",
+		"ALTER TABLE tx_ins SHARD_ROW_ID_BITS = 8",
 		"ALTER TABLE voting_procedures SHARD_ROW_ID_BITS = 6",
 		"ALTER TABLE ma_tx_outs SHARD_ROW_ID_BITS = 8",
 		"ALTER TABLE stake_addresses SHARD_ROW_ID_BITS = 4",
@@ -313,18 +312,41 @@ func applyTiDBOptimizations(db *gorm.DB) error {
 		}
 	}
 
-	// Create custom indexes for common queries and CRITICAL PERFORMANCE FIXES
+	// Phase 1 Optimization: Create comprehensive indexes for common queries
+	// NOTE: These indexes are now defined in the model struct tags and created by auto-migration.
+	// We keep these manual creations as a safety net for existing installations that might
+	// not have recreated their tables. The "IF NOT EXISTS" clause makes this safe.
 	indexQueries := []string{
 		// CRITICAL: Missing hash_raw index was causing 55K+ record table scans
+		// Now defined in models/staking.go with gorm:"uniqueIndex:idx_stake_addresses_hash_raw"
 		"CREATE INDEX IF NOT EXISTS idx_stake_addresses_hash_raw ON stake_addresses(hash_raw)",
 
 		// Performance indexes for tx_outs (high-volume table)
 		"CREATE INDEX IF NOT EXISTS idx_tx_outs_compound ON tx_outs(tx_id, stake_address_id)",
 		"CREATE INDEX IF NOT EXISTS idx_tx_outs_lookup ON tx_outs(tx_id, `index`)",
+		"CREATE INDEX IF NOT EXISTS idx_tx_outs_tx_id ON tx_outs(tx_id)", // For batch lookups
+
+		// Pool hash lookup optimization
+		"CREATE INDEX IF NOT EXISTS idx_pool_hashes_hash_raw ON pool_hashes(hash_raw)",
+
+		// Multi-asset lookup optimization  
+		"CREATE INDEX IF NOT EXISTS idx_multi_assets_policy_name ON multi_assets(policy, name)",
+
+		// Transaction and block relationship indexes
+		"CREATE INDEX IF NOT EXISTS idx_txes_block_id ON txes(block_id)",
+		"CREATE INDEX IF NOT EXISTS idx_blocks_slot_no ON blocks(slot_no)",
+
+		// Certificate processing indexes
+		"CREATE INDEX IF NOT EXISTS idx_delegations_addr_id ON delegations(addr_id)",
+		"CREATE INDEX IF NOT EXISTS idx_pool_updates_hash_id ON pool_updates(hash_id)",
+
+		// Governance indexes
+		"CREATE INDEX IF NOT EXISTS idx_voting_procedures_tx_id_index ON voting_procedures(tx_id, `index`)",
+		"CREATE INDEX IF NOT EXISTS idx_gov_action_proposals_tx_id_index ON gov_action_proposals(tx_id, `index`)",
 
 		// Existing indexes
 		"CREATE INDEX IF NOT EXISTS idx_voting_procedure_voter_role_epoch ON voting_procedures (voter_role, tx_id)",
-		"CREATE INDEX IF NOT EXISTS idx_tx_out_address_value ON tx_out (address(20), value)",
+		"CREATE INDEX IF NOT EXISTS idx_tx_out_address_value ON tx_outs (address(20), value)",
 		"CREATE INDEX IF NOT EXISTS idx_delegation_epoch ON delegations (active_epoch_no)",
 		"CREATE INDEX IF NOT EXISTS idx_gov_action_type ON gov_action_proposals (type, tx_id)",
 		"CREATE INDEX IF NOT EXISTS idx_epoch_state_epoch ON epoch_states (epoch_no)",
@@ -338,6 +360,51 @@ func applyTiDBOptimizations(db *gorm.DB) error {
 	}
 
 	log.Println("TiDB optimizations applied")
+	return nil
+}
+
+// enableTiDBOptimizations applies TiDB-specific session and global optimizations
+func enableTiDBOptimizations(db *gorm.DB) error {
+	// Phase 1 Optimization: TiDB-specific optimizations for bulk operations
+	optimizations := []string{
+		// Increase batch size limits
+		"SET SESSION tidb_batch_insert = ON",
+		"SET SESSION tidb_batch_delete = ON",
+		"SET SESSION tidb_batch_commit = ON",
+		
+		// Optimize for bulk operations
+		"SET SESSION tidb_dml_batch_size = 5000",
+		"SET SESSION tidb_max_chunk_size = 1024",
+		
+		// Disable unnecessary checks during bulk insert
+		"SET SESSION tidb_skip_utf8_check = ON",
+		"SET SESSION tidb_constraint_check_in_place = OFF",
+		
+		// Optimize memory usage
+		"SET SESSION tidb_mem_quota_query = 8589934592", // 8GB per query
+		"SET SESSION tidb_enable_chunk_rpc = ON",
+		
+		// Enable parallel execution
+		"SET SESSION tidb_distsql_scan_concurrency = 15",
+		"SET SESSION tidb_executor_concurrency = 5",
+		
+		// Optimize index usage
+		"SET SESSION tidb_opt_insubq_to_join_and_agg = ON",
+		"SET SESSION tidb_enable_index_merge = ON",
+		
+		// Enable async commit and 1PC for better performance
+		"SET SESSION tidb_enable_async_commit = ON",
+		"SET SESSION tidb_enable_1pc = ON",
+	}
+	
+	for _, opt := range optimizations {
+		if err := db.Exec(opt).Error; err != nil {
+			// Some settings might not be available in all TiDB versions
+			log.Printf("Warning: TiDB optimization failed (%s): %v", opt, err)
+			// Continue with other optimizations
+		}
+	}
+	
 	return nil
 }
 

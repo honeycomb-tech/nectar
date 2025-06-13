@@ -1,0 +1,763 @@
+// Copyright 2025 The Nectar Authors
+// Off-chain metadata fetcher service for pool and governance metadata
+
+package metadata
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"sync"
+	"time"
+
+	"golang.org/x/time/rate"
+	"gorm.io/gorm"
+	"nectar/models"
+)
+
+// Config holds configuration for the metadata fetcher
+type Config struct {
+	MaxRetries        int
+	RetryBackoff      time.Duration
+	RequestTimeout    time.Duration
+	RateLimit         rate.Limit
+	RateBurst         int
+	MaxContentSize    int64
+	UserAgent         string
+	WorkerCount       int
+	QueueSize         int
+	FetchInterval     time.Duration
+	AllowedSchemes    []string
+	MaxRedirects      int
+	ValidateJSON      bool
+}
+
+// DefaultConfig returns sensible production defaults
+func DefaultConfig() Config {
+	return Config{
+		MaxRetries:     3,
+		RetryBackoff:   5 * time.Second,
+		RequestTimeout: 30 * time.Second,
+		RateLimit:      rate.Limit(10), // 10 requests per second
+		RateBurst:      20,
+		MaxContentSize: 10 * 1024 * 1024, // 10MB max
+		UserAgent:      "Nectar/1.0 (Cardano Metadata Fetcher)",
+		WorkerCount:    5,
+		QueueSize:      1000,
+		FetchInterval:  30 * time.Second,
+		AllowedSchemes: []string{"https", "http"},
+		MaxRedirects:   5,
+		ValidateJSON:   true,
+	}
+}
+
+// FetchRequest represents a metadata fetch request
+type FetchRequest struct {
+	ID           uint64
+	Type         string // "pool" or "governance"
+	URL          string
+	ExpectedHash []byte
+	RetryCount   int
+	Context      map[string]interface{} // Additional context (pool_id, anchor_id, etc)
+}
+
+// Fetcher handles off-chain metadata fetching
+type Fetcher struct {
+	config      Config
+	db          *gorm.DB
+	httpClient  *http.Client
+	rateLimiter *rate.Limiter
+	queue       chan FetchRequest
+	wg          sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
+	mu          sync.RWMutex
+	processing  map[string]bool // Track URLs being processed
+}
+
+// New creates a new metadata fetcher
+func New(db *gorm.DB, config Config) *Fetcher {
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	// Configure HTTP client with production settings
+	httpClient := &http.Client{
+		Timeout: config.RequestTimeout,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  false,
+			DisableKeepAlives:   false,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= config.MaxRedirects {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+
+	return &Fetcher{
+		config:      config,
+		db:          db,
+		httpClient:  httpClient,
+		rateLimiter: rate.NewLimiter(config.RateLimit, config.RateBurst),
+		queue:       make(chan FetchRequest, config.QueueSize),
+		ctx:         ctx,
+		cancel:      cancel,
+		processing:  make(map[string]bool),
+	}
+}
+
+// Start begins the metadata fetching service
+func (f *Fetcher) Start() error {
+	logger.Info("Starting metadata fetcher service",
+		"workers", f.config.WorkerCount,
+		"queue_size", f.config.QueueSize,
+		"rate_limit", f.config.RateLimit,
+	)
+
+	// Start worker goroutines
+	for i := 0; i < f.config.WorkerCount; i++ {
+		f.wg.Add(1)
+		go f.worker(i)
+	}
+
+	// Start queue processor - removed as not needed
+
+	// Start periodic scanner for missed metadata
+	f.wg.Add(1)
+	go f.periodicScanner()
+
+	return nil
+}
+
+// Stop gracefully shuts down the fetcher
+func (f *Fetcher) Stop() error {
+	logger.Info("Stopping metadata fetcher service")
+	f.cancel()
+	close(f.queue)
+	f.wg.Wait()
+	return nil
+}
+
+// QueuePoolMetadata queues a pool metadata fetch request
+func (f *Fetcher) QueuePoolMetadata(poolID, pmrID uint64, url string, hash []byte) error {
+	req := FetchRequest{
+		ID:           pmrID,
+		Type:         "pool",
+		URL:          url,
+		ExpectedHash: hash,
+		Context: map[string]interface{}{
+			"pool_id": poolID,
+			"pmr_id":  pmrID,
+		},
+	}
+
+	select {
+	case f.queue <- req:
+		return nil
+	case <-f.ctx.Done():
+		return fmt.Errorf("fetcher is shutting down")
+	default:
+		return fmt.Errorf("queue is full")
+	}
+}
+
+// QueueGovernanceMetadata queues a governance metadata fetch request
+func (f *Fetcher) QueueGovernanceMetadata(anchorID uint64, url string, hash []byte) error {
+	req := FetchRequest{
+		ID:           anchorID,
+		Type:         "governance",
+		URL:          url,
+		ExpectedHash: hash,
+		Context: map[string]interface{}{
+			"anchor_id": anchorID,
+		},
+	}
+
+	select {
+	case f.queue <- req:
+		return nil
+	case <-f.ctx.Done():
+		return fmt.Errorf("fetcher is shutting down")
+	default:
+		return fmt.Errorf("queue is full")
+	}
+}
+
+// worker processes fetch requests from the queue
+func (f *Fetcher) worker(id int) {
+	defer f.wg.Done()
+	logger.Debug("Metadata worker started", "worker_id", id)
+
+	for {
+		select {
+		case req, ok := <-f.queue:
+			if !ok {
+				logger.Debug("Worker stopping, queue closed", "worker_id", id)
+				return
+			}
+
+			// Check if URL is already being processed
+			if f.isProcessing(req.URL) {
+				// Re-queue for later
+				go func() {
+					time.Sleep(5 * time.Second)
+					f.queue <- req
+				}()
+				continue
+			}
+
+			// Mark as processing
+			f.setProcessing(req.URL, true)
+			// Process the request
+			err := f.processFetchRequest(req)
+
+			// Unmark as processing
+			f.setProcessing(req.URL, false)
+
+			if err != nil {
+				logger.Error("Failed to fetch metadata",
+					"type", req.Type,
+					"url", req.URL,
+					"error", err,
+					"retry_count", req.RetryCount,
+				)
+
+				// Retry logic
+				if req.RetryCount < f.config.MaxRetries {
+					req.RetryCount++
+					go func() {
+						backoff := f.config.RetryBackoff * time.Duration(req.RetryCount)
+						time.Sleep(backoff)
+						f.queue <- req
+					}()
+				} else {
+					// Max retries reached, record permanent failure
+					f.recordFetchError(req, err)
+				}
+			} else {
+			}
+
+		case <-f.ctx.Done():
+			logger.Debug("Worker stopping, context cancelled", "worker_id", id)
+			return
+		}
+	}
+}
+
+// processFetchRequest handles a single fetch request
+func (f *Fetcher) processFetchRequest(req FetchRequest) error {
+	// Validate URL
+	parsedURL, err := f.validateURL(req.URL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Rate limiting
+	if err := f.rateLimiter.Wait(f.ctx); err != nil {
+		return fmt.Errorf("rate limiter error: %w", err)
+	}
+
+	// Fetch metadata
+	data, err := f.fetchURL(parsedURL)
+	if err != nil {
+		return fmt.Errorf("fetch error: %w", err)
+	}
+
+	// Verify hash
+	if !f.verifyHash(data, req.ExpectedHash) {
+		return fmt.Errorf("hash mismatch")
+	}
+
+	// Parse and validate JSON
+	var jsonData interface{}
+	if f.config.ValidateJSON {
+		if err := json.Unmarshal(data, &jsonData); err != nil {
+			return fmt.Errorf("invalid JSON: %w", err)
+		}
+	}
+
+	// Store metadata based on type
+	switch req.Type {
+	case "pool":
+		return f.storePoolMetadata(req, data, jsonData)
+	case "governance":
+		return f.storeGovernanceMetadata(req, data, jsonData)
+	default:
+		return fmt.Errorf("unknown metadata type: %s", req.Type)
+	}
+}
+
+// validateURL validates and parses the URL
+func (f *Fetcher) validateURL(rawURL string) (*url.URL, error) {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check allowed schemes
+	allowed := false
+	for _, scheme := range f.config.AllowedSchemes {
+		if parsedURL.Scheme == scheme {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, fmt.Errorf("scheme not allowed: %s", parsedURL.Scheme)
+	}
+
+	// Additional validation
+	if parsedURL.Host == "" {
+		return nil, fmt.Errorf("missing host")
+	}
+
+	return parsedURL, nil
+}
+
+// fetchURL fetches content from a URL with size limits
+func (f *Fetcher) fetchURL(parsedURL *url.URL) ([]byte, error) {
+	req, err := http.NewRequestWithContext(f.ctx, "GET", parsedURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", f.config.UserAgent)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	// Limit response size
+	limitedReader := io.LimitReader(resp.Body, f.config.MaxContentSize)
+	data, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+// verifyHash verifies the content hash
+func (f *Fetcher) verifyHash(data []byte, expectedHash []byte) bool {
+	actualHash := sha256.Sum256(data)
+	return hex.EncodeToString(actualHash[:]) == hex.EncodeToString(expectedHash)
+}
+
+// storePoolMetadata stores fetched pool metadata
+func (f *Fetcher) storePoolMetadata(req FetchRequest, data []byte, jsonData interface{}) error {
+	poolID := req.Context["pool_id"].(uint64)
+	pmrID := req.Context["pmr_id"].(uint64)
+
+	// Parse pool metadata structure
+	var poolMeta struct {
+		Name        string `json:"name"`
+		Ticker      string `json:"ticker"`
+		Homepage    string `json:"homepage"`
+		Description string `json:"description"`
+	}
+
+	if err := json.Unmarshal(data, &poolMeta); err != nil {
+		return fmt.Errorf("failed to parse pool metadata: %w", err)
+	}
+
+	// Validate ticker length
+	if len(poolMeta.Ticker) > 5 {
+		poolMeta.Ticker = poolMeta.Ticker[:5]
+	}
+
+	// Store in database
+	offChainData := &models.OffChainPoolData{
+		PoolID:     poolID,
+		TickerName: poolMeta.Ticker,
+		Hash:       req.ExpectedHash,
+		Json:       string(data),
+		Bytes:      data,
+		PmrID:      pmrID,
+	}
+
+	if err := f.db.Create(offChainData).Error; err != nil {
+		return fmt.Errorf("failed to store pool metadata: %w", err)
+	}
+
+	logger.Info("Stored pool metadata",
+		"pool_id", poolID,
+		"ticker", poolMeta.Ticker,
+		"name", poolMeta.Name,
+	)
+
+	return nil
+}
+
+// storeGovernanceMetadata stores fetched governance metadata
+func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonData interface{}) error {
+	anchorID := req.Context["anchor_id"].(uint64)
+
+	// Parse CIP-119 JSON-LD structure
+	var govMeta map[string]interface{}
+	if err := json.Unmarshal(data, &govMeta); err != nil {
+		return fmt.Errorf("failed to parse governance metadata: %w", err)
+	}
+
+	// Extract common fields
+	language, _ := govMeta["@language"].(string)
+	comment, _ := govMeta["comment"].(string)
+	
+	// Validate and determine type
+	isValid := f.validateGovernanceMetadata(govMeta)
+	var warning string
+	if !isValid {
+		warning = "Invalid CIP-119 format"
+	}
+
+	// Store main vote data
+	voteData := &models.OffChainVoteData{
+		VotingAnchorID: anchorID,
+		Hash:           req.ExpectedHash,
+		Language:       language,
+		Comment:        &comment,
+		Json:           string(data),
+		Bytes:          data,
+		Warning:        &warning,
+		IsValid:        isValid,
+	}
+
+	tx := f.db.Begin()
+	if err := tx.Create(voteData).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to store vote data: %w", err)
+	}
+
+	// Store additional governance data based on type
+	govMeta["anchorID"] = anchorID // Pass anchorID through meta
+	if err := f.storeGovernanceDetails(tx, voteData.ID, govMeta); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to store governance details: %w", err)
+	}
+
+	tx.Commit()
+
+	logger.Info("Stored governance metadata",
+		"anchor_id", anchorID,
+		"type", govMeta["@type"],
+		"is_valid", isValid,
+	)
+
+	return nil
+}
+
+// storeGovernanceDetails stores type-specific governance metadata
+func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataID uint64, meta map[string]interface{}) error {
+	metaType, _ := meta["@type"].(string)
+	anchorID := meta["anchorID"].(uint64) // Pass through from caller
+
+	switch metaType {
+	case "GovernanceAction":
+		// Store governance action data
+		title, _ := meta["title"].(string)
+		abstract, _ := meta["abstract"].(string)
+		motivation, _ := meta["motivation"].(string)
+		rationale, _ := meta["rationale"].(string)
+		language, _ := meta["@language"].(string)
+
+		govAction := &models.OffChainVoteGovActionData{
+			OffChainVoteDataID: voteDataID,
+			VotingAnchorID:     anchorID,
+			Language:           language,
+			Title:              &title,
+			Abstract:           &abstract,
+			Motivation:         &motivation,
+			Rationale:          &rationale,
+		}
+		if err := tx.Create(govAction).Error; err != nil {
+			return err
+		}
+
+	case "DRepMetadata":
+		// Store DRep metadata
+		bio, _ := meta["bio"].(string)
+		email, _ := meta["email"].(string)
+		givenName, _ := meta["givenName"].(string)
+		language, _ := meta["@language"].(string)
+		comment, _ := meta["comment"].(string)
+		paymentAddress, _ := meta["paymentAddress"].(string)
+		image, _ := meta["image"].(string)
+		objectives, _ := meta["objectives"].(string)
+		motivations, _ := meta["motivations"].(string)
+		qualifications, _ := meta["qualifications"].(string)
+		doNotList, _ := meta["doNotList"].(bool)
+
+		drepData := &models.OffChainVoteDRepData{
+			OffChainVoteDataID: voteDataID,
+			VotingAnchorID:     anchorID,
+			Language:           language,
+			Comment:            &comment,
+			Bio:                &bio,
+			Email:              &email,
+			PaymentAddress:     &paymentAddress,
+			GivenName:          &givenName,
+			Image:              &image,
+			Objectives:         &objectives,
+			Motivations:        &motivations,
+			Qualifications:     &qualifications,
+			DoNotList:          doNotList,
+			// Note: DRepHashID would need to be retrieved from the transaction context
+			DRepHashID:         1, // Placeholder - should be retrieved from context
+		}
+		if err := tx.Create(drepData).Error; err != nil {
+			return err
+		}
+
+	default:
+		// Store as generic vote data
+		logger.Debug("Unknown governance metadata type", "type", metaType)
+	}
+
+	// Store authors if present
+	if authors, ok := meta["authors"].([]interface{}); ok {
+		for _, author := range authors {
+			if authorMap, ok := author.(map[string]interface{}); ok {
+				name := authorMap["name"].(string)
+				var witnessBytes []byte
+				if witnessData, ok := authorMap["witness"].(string); ok {
+					// Assuming witness is a hex-encoded string
+					if decoded, err := hex.DecodeString(witnessData); err == nil {
+						witnessBytes = decoded
+					}
+				}
+				authorData := &models.OffChainVoteAuthor{
+					OffChainVoteDataID: voteDataID,
+					Name:               &name,
+					Witness:            witnessBytes,
+				}
+				if err := tx.Create(authorData).Error; err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// Store references if present
+	if refs, ok := meta["references"].([]interface{}); ok {
+		for _, ref := range refs {
+			if refMap, ok := ref.(map[string]interface{}); ok {
+				label := refMap["label"].(string)
+				uri := refMap["uri"].(string)
+				var referenceHash []byte
+				if hashStr, ok := refMap["hashDigest"].(string); ok {
+					// Decode hex-encoded hash
+					if decoded, err := hex.DecodeString(hashStr); err == nil {
+						referenceHash = decoded
+					}
+				}
+				refData := &models.OffChainVoteReference{
+					OffChainVoteDataID: voteDataID,
+					Label:              label,
+					URI:                uri,
+					ReferenceHash:      referenceHash,
+				}
+				if err := tx.Create(refData).Error; err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateGovernanceMetadata validates CIP-119 format
+func (f *Fetcher) validateGovernanceMetadata(meta map[string]interface{}) bool {
+	// Check required fields
+	requiredFields := []string{"@context", "@type"}
+	for _, field := range requiredFields {
+		if _, ok := meta[field]; !ok {
+			return false
+		}
+	}
+
+	// Validate context
+	context, ok := meta["@context"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	// Check for CIP-119 context
+	cip119, ok := context["CIP119"].(string)
+	if !ok || cip119 != "https://github.com/cardano-foundation/CIPs/blob/master/CIP-0119/CIP-0119.jsonld" {
+		return false
+	}
+
+	return true
+}
+
+// recordFetchError records a permanent fetch failure
+func (f *Fetcher) recordFetchError(req FetchRequest, err error) {
+	switch req.Type {
+	case "pool":
+		poolID := req.Context["pool_id"].(uint64)
+		pmrID := req.Context["pmr_id"].(uint64)
+		
+		fetchError := &models.OffChainPoolFetchError{
+			PoolID:     poolID,
+			FetchTime:  time.Now(),
+			PmrID:      pmrID,
+			FetchError: err.Error(),
+			RetryCount: uint32(req.RetryCount),
+		}
+		
+		if dbErr := f.db.Create(fetchError).Error; dbErr != nil {
+			logger.Error("Failed to record pool fetch error", "error", dbErr)
+		}
+
+	case "governance":
+		anchorID := req.Context["anchor_id"].(uint64)
+		
+		fetchError := &models.OffChainVoteFetchError{
+			VotingAnchorID: anchorID,
+			FetchTime:      time.Now(),
+			FetchError:     err.Error(),
+			RetryCount:     uint32(req.RetryCount),
+		}
+		
+		if dbErr := f.db.Create(fetchError).Error; dbErr != nil {
+			logger.Error("Failed to record governance fetch error", "error", dbErr)
+		}
+	}
+}
+
+// periodicScanner scans for unfetched metadata periodically
+func (f *Fetcher) periodicScanner() {
+	defer f.wg.Done()
+	ticker := time.NewTicker(f.config.FetchInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			f.scanUnfetchedMetadata()
+		case <-f.ctx.Done():
+			return
+		}
+	}
+}
+
+// scanUnfetchedMetadata finds and queues unfetched metadata
+func (f *Fetcher) scanUnfetchedMetadata() {
+	// Scan for unfetched pool metadata
+	var unfetchedPools []struct {
+		PoolID uint64
+		PmrID  uint64
+		URL    string
+		Hash   []byte
+	}
+
+	query := `
+		SELECT pmr.pool_id, pmr.id as pmr_id, pmr.url, pmr.hash
+		FROM pool_metadata_refs pmr
+		LEFT JOIN off_chain_pool_data ocpd ON pmr.id = ocpd.pmr_id
+		LEFT JOIN off_chain_pool_fetch_error ocpfe ON pmr.id = ocpfe.pmr_id
+		WHERE ocpd.id IS NULL 
+		AND (ocpfe.id IS NULL OR ocpfe.retry_count < ?)
+		LIMIT 100
+	`
+
+	if err := f.db.Raw(query, f.config.MaxRetries).Scan(&unfetchedPools).Error; err != nil {
+		logger.Error("Failed to scan unfetched pool metadata", "error", err)
+		return
+	}
+
+	for _, pool := range unfetchedPools {
+		if err := f.QueuePoolMetadata(pool.PoolID, pool.PmrID, pool.URL, pool.Hash); err != nil {
+			logger.Debug("Failed to queue pool metadata", "error", err)
+		}
+	}
+
+	// Scan for unfetched governance metadata
+	var unfetchedAnchors []struct {
+		AnchorID uint64
+		URL      string
+		Hash     []byte
+	}
+
+	query = `
+		SELECT va.id as anchor_id, va.url, va.data_hash as hash
+		FROM voting_anchors va
+		LEFT JOIN off_chain_vote_data ocvd ON va.id = ocvd.voting_anchor_id
+		LEFT JOIN off_chain_vote_fetch_errors ocvfe ON va.id = ocvfe.voting_anchor_id
+		WHERE ocvd.id IS NULL
+		AND (ocvfe.id IS NULL OR ocvfe.retry_count < ?)
+		LIMIT 100
+	`
+
+	if err := f.db.Raw(query, f.config.MaxRetries).Scan(&unfetchedAnchors).Error; err != nil {
+		logger.Error("Failed to scan unfetched governance metadata", "error", err)
+		return
+	}
+
+	for _, anchor := range unfetchedAnchors {
+		if err := f.QueueGovernanceMetadata(anchor.AnchorID, anchor.URL, anchor.Hash); err != nil {
+			logger.Debug("Failed to queue governance metadata", "error", err)
+		}
+	}
+
+	logger.Debug("Periodic metadata scan complete",
+		"unfetched_pools", len(unfetchedPools),
+		"unfetched_anchors", len(unfetchedAnchors),
+	)
+}
+
+// Helper methods for concurrency control
+func (f *Fetcher) isProcessing(url string) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.processing[url]
+}
+
+func (f *Fetcher) setProcessing(url string, status bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if status {
+		f.processing[url] = true
+	} else {
+		delete(f.processing, url)
+	}
+}
+
+// Simple logger implementation using standard log package
+type simpleLogger struct{}
+
+func (s simpleLogger) Info(msg string, keysAndValues ...interface{}) {
+	log.Printf("[INFO] %s %v", msg, keysAndValues)
+}
+
+func (s simpleLogger) Debug(msg string, keysAndValues ...interface{}) {
+	if debugMode {
+		log.Printf("[DEBUG] %s %v", msg, keysAndValues)
+	}
+}
+
+func (s simpleLogger) Error(msg string, keysAndValues ...interface{}) {
+	log.Printf("[ERROR] %s %v", msg, keysAndValues)
+}
+
+// Package-level logger
+var (
+	logger    = simpleLogger{}
+	debugMode = false
+)

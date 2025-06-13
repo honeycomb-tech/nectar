@@ -30,12 +30,17 @@ type VotingProcedure struct {
 	Invalid             *uint64   `gorm:"type:BIGINT"`
 
 	// Relationships
-	Tx                Tx                 `gorm:"foreignKey:TxID"`
-	GovActionProposal GovActionProposal  `gorm:"foreignKey:GovActionProposalID"`
-	CommitteeHash     *CommitteeHash     `gorm:"foreignKey:CommitteeVoter"`
-	DRepHash          *DRepHash          `gorm:"foreignKey:DRepVoter"`
-	PoolHash          *PoolHash          `gorm:"foreignKey:PoolVoter"`
-	VotingAnchor      *VotingAnchor      `gorm:"foreignKey:VotingAnchorID"`
+	Tx                  Tx              `gorm:"foreignKey:TxID"`
+	GovActionProposal   GovActionProposal `gorm:"foreignKey:GovActionProposalID"`
+	CommitteeVoterHash  *CommitteeHash  `gorm:"foreignKey:CommitteeVoter"`
+	DRepVoterHash       *DRepHash       `gorm:"foreignKey:DRepVoter"`
+	PoolVoterHash       *PoolHash       `gorm:"foreignKey:PoolVoter"`
+	VotingAnchor        *VotingAnchor   `gorm:"foreignKey:VotingAnchorID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (VotingProcedure) TableName() string {
+	return "voting_procedures"
 }
 
 // GovActionProposal represents governance action proposals
@@ -62,10 +67,15 @@ type GovActionProposal struct {
 	TreasuryWithdrawals []TreasuryWithdrawal `gorm:"foreignKey:GovActionProposalID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (GovActionProposal) TableName() string {
+	return "gov_action_proposals"
+}
+
 // ParamProposal represents protocol parameter proposals
 type ParamProposal struct {
 	ID                    uint64   `gorm:"primaryKey;autoIncrement"`
-	EpochNo               uint32   `gorm:"type:INT UNSIGNED;not null"`
+	EpochNo               uint32   `gorm:"type:INT UNSIGNED;not null;index"`
 	Key                   uint32   `gorm:"type:INT UNSIGNED;not null"`
 	MinFeeA               *uint64  `gorm:"type:BIGINT UNSIGNED"`
 	MinFeeB               *uint64  `gorm:"type:BIGINT UNSIGNED"`
@@ -99,8 +109,15 @@ type ParamProposal struct {
 	CoinsPerUtxoWord      *uint64  `gorm:"type:BIGINT UNSIGNED"`
 
 	// Relationships
-	CostModel         *CostModel         `gorm:"foreignKey:CostModelID"`
+	// Note: EpochParam relationship removed to fix foreign key constraint issues
+	// EpochParams should exist independently, not be constrained by ParamProposals
+	CostModel         *CostModel     `gorm:"foreignKey:CostModelID"`
 	GovActionProposals []GovActionProposal `gorm:"foreignKey:ParamProposalID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (ParamProposal) TableName() string {
+	return "param_proposals"
 }
 
 // DRepHash represents DRep hashes
@@ -114,7 +131,11 @@ type DRepHash struct {
 	VotingProcedures     []VotingProcedure     `gorm:"foreignKey:DRepVoter"`
 	DelegationVotes      []DelegationVote      `gorm:"foreignKey:DRepHashID"`
 	DRepDistrs           []DRepDistr           `gorm:"foreignKey:HashID"`
-	OffChainVoteDRepData []OffChainVoteDRepData `gorm:"foreignKey:DRepHashID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (DRepHash) TableName() string {
+	return "d_rep_hashes"
 }
 
 // CommitteeHash represents committee member hashes  
@@ -130,6 +151,11 @@ type CommitteeHash struct {
 	CommitteeMembers         []CommitteeMember         `gorm:"foreignKey:CommitteeHashID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (CommitteeHash) TableName() string {
+	return "committee_hashes"
+}
+
 // VotingAnchor represents voting anchor information
 type VotingAnchor struct {
 	ID       uint64 `gorm:"primaryKey;autoIncrement"`
@@ -139,6 +165,11 @@ type VotingAnchor struct {
 	// Relationships
 	VotingProcedures   []VotingProcedure   `gorm:"foreignKey:VotingAnchorID"`
 	GovActionProposals []GovActionProposal `gorm:"foreignKey:VotingAnchorID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (VotingAnchor) TableName() string {
+	return "voting_anchors"
 }
 
 // DelegationVote represents delegation votes
@@ -157,6 +188,11 @@ type DelegationVote struct {
 	Redeemer *Redeemer    `gorm:"foreignKey:RedeemerID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (DelegationVote) TableName() string {
+	return "delegation_votes"
+}
+
 // CommitteeRegistration represents committee registrations
 type CommitteeRegistration struct {
 	ID        uint64 `gorm:"primaryKey;autoIncrement"`
@@ -169,6 +205,11 @@ type CommitteeRegistration struct {
 	Tx      Tx            `gorm:"foreignKey:TxID"`
 	ColdKey CommitteeHash `gorm:"foreignKey:ColdKeyID"`
 	HotKey  CommitteeHash `gorm:"foreignKey:HotKeyID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (CommitteeRegistration) TableName() string {
+	return "committee_registrations"
 }
 
 // CommitteeDeregistration represents committee deregistrations
@@ -185,6 +226,11 @@ type CommitteeDeregistration struct {
 	Anchor   *VotingAnchor `gorm:"foreignKey:AnchorID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (CommitteeDeregistration) TableName() string {
+	return "committee_deregistrations"
+}
+
 // TreasuryWithdrawal represents treasury withdrawals
 type TreasuryWithdrawal struct {
 	ID                  uint64 `gorm:"primaryKey;autoIncrement"`
@@ -197,6 +243,11 @@ type TreasuryWithdrawal struct {
 	StakeAddress      StakeAddress      `gorm:"foreignKey:StakeAddressID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (TreasuryWithdrawal) TableName() string {
+	return "treasury_withdrawals"
+}
+
 // CommitteeMember represents committee members
 type CommitteeMember struct {
 	ID               uint64 `gorm:"primaryKey;autoIncrement"`
@@ -206,6 +257,11 @@ type CommitteeMember struct {
 
 	// Relationships
 	CommitteeHash CommitteeHash `gorm:"foreignKey:CommitteeHashID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (CommitteeMember) TableName() string {
+	return "committee_members"
 }
 
 // EpochState represents epoch state information
@@ -222,6 +278,11 @@ type EpochState struct {
 	Constitution  *Constitution      `gorm:"foreignKey:ConstitutionID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (EpochState) TableName() string {
+	return "epoch_states"
+}
+
 // DRepDistr represents DRep distribution
 type DRepDistr struct {
 	ID     uint64 `gorm:"primaryKey;autoIncrement"`
@@ -233,6 +294,11 @@ type DRepDistr struct {
 	Hash DRepHash `gorm:"foreignKey:HashID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (DRepDistr) TableName() string {
+	return "d_rep_distrs"
+}
+
 // Committee represents committee information
 type Committee struct {
 	ID      uint64 `gorm:"primaryKey;autoIncrement"`
@@ -242,6 +308,11 @@ type Committee struct {
 	// Relationships
 	GovActionProposal GovActionProposal `gorm:"foreignKey:GovActionProposalID"`
 	EpochStates       []EpochState      `gorm:"foreignKey:CommitteeID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (Committee) TableName() string {
+	return "committees"
 }
 
 // Constitution represents constitution information
@@ -257,6 +328,11 @@ type Constitution struct {
 	EpochStates       []EpochState      `gorm:"foreignKey:ConstitutionID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (Constitution) TableName() string {
+	return "constitutions"
+}
+
 // Treasury represents treasury information
 type Treasury struct {
 	ID              uint64 `gorm:"primaryKey;autoIncrement"`
@@ -268,6 +344,11 @@ type Treasury struct {
 	// Relationships
 	Tx           Tx           `gorm:"foreignKey:TxID"`
 	StakeAddress StakeAddress `gorm:"foreignKey:StakeAddressID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (Treasury) TableName() string {
+	return "treasuries"
 }
 
 // Reserve represents reserve information
@@ -283,6 +364,11 @@ type Reserve struct {
 	StakeAddress StakeAddress `gorm:"foreignKey:StakeAddressID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (Reserve) TableName() string {
+	return "reserves"
+}
+
 // PotTransfer represents pot transfers
 type PotTransfer struct {
 	ID        uint64 `gorm:"primaryKey;autoIncrement"`
@@ -292,6 +378,11 @@ type PotTransfer struct {
 
 	// Relationships
 	Tx Tx `gorm:"foreignKey:TxID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (PotTransfer) TableName() string {
+	return "pot_transfers"
 }
 
 // DrepInfo represents Delegated Representative information
@@ -311,4 +402,10 @@ type DrepInfo struct {
 	VotingAnchor    *VotingAnchor `gorm:"foreignKey:VotingAnchorID"`
 	DelegationVotes []DelegationVote `gorm:"foreignKey:DrepHashID"`
 	VotingProcedures []VotingProcedure `gorm:"foreignKey:DrepVoter"`
-} 
+}
+
+// TableName ensures proper table naming to match database reality
+func (DrepInfo) TableName() string {
+	return "drep_infos"
+}
+

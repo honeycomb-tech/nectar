@@ -19,6 +19,11 @@ type OffChainPoolData struct {
 	Pmr  PoolMetadataRef `gorm:"foreignKey:PmrID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (OffChainPoolData) TableName() string {
+	return "off_chain_pool_data"
+}
+
 // OffChainPoolFetchError represents pool metadata fetch errors
 type OffChainPoolFetchError struct {
 	ID          uint64    `gorm:"primaryKey;autoIncrement"`
@@ -29,8 +34,13 @@ type OffChainPoolFetchError struct {
 	PmrID       uint64    `gorm:"not null"`
 
 	// Relationships
-	Pool PoolMetadataRef `gorm:"foreignKey:PoolID"`
+	Pool PoolHash `gorm:"foreignKey:PoolID"`
 	PMR  PoolMetadataRef `gorm:"foreignKey:PmrID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (OffChainPoolFetchError) TableName() string {
+	return "off_chain_pool_fetch_error"
 }
 
 // OffChainVoteData represents off-chain vote data
@@ -54,6 +64,11 @@ type OffChainVoteData struct {
 	ExternalUpdates      []OffChainVoteExternalUpdate `gorm:"foreignKey:OffChainVoteDataID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (OffChainVoteData) TableName() string {
+	return "off_chain_vote_data"
+}
+
 // OffChainVoteGovActionData represents governance action data
 type OffChainVoteGovActionData struct {
 	ID                  uint64 `gorm:"primaryKey;autoIncrement"`
@@ -68,6 +83,16 @@ type OffChainVoteGovActionData struct {
 	// Relationships
 	OffChainVoteData OffChainVoteData `gorm:"foreignKey:OffChainVoteDataID"`
 	VotingAnchor     VotingAnchor     `gorm:"foreignKey:VotingAnchorID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (OffChainVoteGovActionData) TableName() string {
+	return "off_chain_vote_gov_action_data"
+}
+
+// TableName ensures proper table naming to match database reality
+func (OffChainVoteDRepData) TableName() string {
+	return "off_chain_vote_d_rep_data"
 }
 
 // OffChainVoteDRepData represents DRep off-chain data
@@ -105,6 +130,21 @@ type OffChainVoteAuthor struct {
 	OffChainVoteData OffChainVoteData `gorm:"foreignKey:OffChainVoteDataID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (OffChainVoteExternalUpdate) TableName() string {
+	return "off_chain_vote_external_updates"
+}
+
+// TableName ensures proper table naming to match database reality
+func (OffChainVoteReference) TableName() string {
+	return "off_chain_vote_references"
+}
+
+// TableName ensures proper table naming to match database reality
+func (OffChainVoteAuthor) TableName() string {
+	return "off_chain_vote_authors"
+}
+
 // OffChainVoteReference represents vote references
 type OffChainVoteReference struct {
 	ID                  uint64 `gorm:"primaryKey;autoIncrement"`
@@ -138,4 +178,9 @@ type OffChainVoteFetchError struct {
 
 	// Relationships
 	VotingAnchor VotingAnchor `gorm:"foreignKey:VotingAnchorID"`
-} 
+}
+
+// TableName ensures proper table naming to match database reality
+func (OffChainVoteFetchError) TableName() string {
+	return "off_chain_vote_fetch_errors"
+}

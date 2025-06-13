@@ -12,16 +12,26 @@ type MultiAsset struct {
 	MaTxMints []MaTxMint `gorm:"foreignKey:IdentID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (MultiAsset) TableName() string {
+	return "multi_assets"
+}
+
 // MaTxOut represents multi-asset transaction outputs
 type MaTxOut struct {
 	ID       uint64 `gorm:"primaryKey;autoIncrement"`
 	IdentID  uint64 `gorm:"not null"`
 	Quantity uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
-	TxOutID  uint64 `gorm:"not null"`
+	TxOutID  uint64 `gorm:"not null;index:idx_ma_tx_outs_tx_out_id"`
 
 	// Relationships
 	Ident MultiAsset `gorm:"foreignKey:IdentID"`
 	TxOut TxOut      `gorm:"foreignKey:TxOutID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (MaTxOut) TableName() string {
+	return "ma_tx_outs"
 }
 
 // MaTxMint represents multi-asset minting
@@ -36,6 +46,11 @@ type MaTxMint struct {
 	Tx    Tx         `gorm:"foreignKey:TxID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (MaTxMint) TableName() string {
+	return "ma_tx_mints"
+}
+
 // Script represents Plutus and native scripts
 type Script struct {
 	ID           uint64 `gorm:"primaryKey;autoIncrement"`
@@ -48,9 +63,14 @@ type Script struct {
 
 	// Relationships
 	Tx               Tx               `gorm:"foreignKey:TxID"`
+	Redeemers        []Redeemer       `gorm:"foreignKey:ScriptHash"`
 	TxOuts           []TxOut          `gorm:"foreignKey:ReferenceScriptID"`
 	CollateralTxOuts []CollateralTxOut `gorm:"foreignKey:ReferenceScriptID"`
-	Redeemers        []Redeemer       `gorm:"foreignKey:ScriptHash"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (Script) TableName() string {
+	return "scripts"
 }
 
 // Datum represents Plutus datums
@@ -67,6 +87,11 @@ type Datum struct {
 	CollateralTxOuts []CollateralTxOut `gorm:"foreignKey:InlineDatumID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (Datum) TableName() string {
+	return "data"
+}
+
 // RedeemerData represents redeemer data
 type RedeemerData struct {
 	ID    uint64 `gorm:"primaryKey;autoIncrement"`
@@ -78,6 +103,11 @@ type RedeemerData struct {
 	// Relationships
 	Tx        Tx        `gorm:"foreignKey:TxID"`
 	Redeemers []Redeemer `gorm:"foreignKey:DataID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (RedeemerData) TableName() string {
+	return "redeemer_data"
 }
 
 // Redeemer represents transaction redeemers
@@ -93,13 +123,18 @@ type Redeemer struct {
 	Fee        *uint64 `gorm:"type:BIGINT UNSIGNED"`
 
 	// Relationships
-	Tx           Tx            `gorm:"foreignKey:TxID"`
-	Script       *Script       `gorm:"foreignKey:ScriptHash"`
-	Data         *RedeemerData `gorm:"foreignKey:DataID"`
-	TxIns        []TxIn        `gorm:"foreignKey:RedeemerID"`
-	Delegations  []Delegation  `gorm:"foreignKey:RedeemerID"`
-	Withdrawals  []Withdrawal  `gorm:"foreignKey:RedeemerID"`
+	Tx        Tx            `gorm:"foreignKey:TxID"`
+	Data      *RedeemerData `gorm:"foreignKey:DataID"`
+	Script    *Script       `gorm:"foreignKey:ScriptHash"`
+	TxIns     []TxIn        `gorm:"foreignKey:RedeemerID"`
+	Delegations []Delegation `gorm:"foreignKey:RedeemerID"`
+	Withdrawals []Withdrawal `gorm:"foreignKey:RedeemerID"`
 	DelegationVotes []DelegationVote `gorm:"foreignKey:RedeemerID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (Redeemer) TableName() string {
+	return "redeemers"
 }
 
 // CollateralTxIn represents collateral transaction inputs
@@ -112,6 +147,16 @@ type CollateralTxIn struct {
 	// Relationships
 	TxIn  Tx    `gorm:"foreignKey:TxInID"`
 	TxOut TxOut `gorm:"foreignKey:TxOutID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (ReferenceTxIn) TableName() string {
+	return "reference_tx_ins"
+}
+
+// TableName ensures proper table naming to match database reality
+func (CollateralTxIn) TableName() string {
+	return "collateral_tx_ins"
 }
 
 // ReferenceTxIn represents reference transaction inputs
@@ -142,10 +187,15 @@ type CollateralTxOut struct {
 	ReferenceScriptID *uint64 `gorm:"type:BIGINT"`
 
 	// Relationships
-	Tx              Tx            `gorm:"foreignKey:TxID"`
-	StakeAddress    *StakeAddress `gorm:"foreignKey:StakeAddressID"`
-	InlineDatum     *Datum        `gorm:"foreignKey:InlineDatumID"`
-	ReferenceScript *Script       `gorm:"foreignKey:ReferenceScriptID"`
+	Tx               Tx            `gorm:"foreignKey:TxID"`
+	StakeAddress     *StakeAddress `gorm:"foreignKey:StakeAddressID"`
+	InlineDatum      *Datum        `gorm:"foreignKey:InlineDatumID"`
+	ReferenceScript  *Script       `gorm:"foreignKey:ReferenceScriptID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (CollateralTxOut) TableName() string {
+	return "collateral_tx_outs"
 }
 
 // TxMetadata represents transaction metadata
@@ -158,6 +208,21 @@ type TxMetadata struct {
 
 	// Relationships
 	Tx Tx `gorm:"foreignKey:TxID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (TxCbor) TableName() string {
+	return "tx_cbors"
+}
+
+// TableName ensures proper table naming to match database reality
+func (ExtraKeyWitness) TableName() string {
+	return "extra_key_witnesses"
+}
+
+// TableName ensures proper table naming to match database reality
+func (TxMetadata) TableName() string {
+	return "tx_metadata"
 }
 
 // ExtraKeyWitness represents extra key witnesses
@@ -188,6 +253,11 @@ type CostModel struct {
 
 	// Relationships
 	ParamProposals []ParamProposal `gorm:"foreignKey:CostModelID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (CostModel) TableName() string {
+	return "cost_models"
 }
 
 // EpochParam represents epoch parameters
@@ -229,6 +299,11 @@ type EpochParam struct {
 	CostModel *CostModel `gorm:"foreignKey:CostModelID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (EpochParam) TableName() string {
+	return "epoch_params"
+}
+
 // AdaPots represents ADA pots (treasury, reserves, etc.)
 type AdaPots struct {
 	ID        uint64 `gorm:"primaryKey;autoIncrement"`
@@ -244,6 +319,11 @@ type AdaPots struct {
 	// No relationships for this aggregate table
 }
 
+// TableName ensures proper table naming to match database reality
+func (AdaPots) TableName() string {
+	return "ada_pots"
+}
+
 // EventInfo represents event information
 type EventInfo struct {
 	ID       uint64 `gorm:"primaryKey;autoIncrement"`
@@ -254,4 +334,9 @@ type EventInfo struct {
 
 	// Relationships
 	Block Block `gorm:"foreignKey:BlockID"`
-} 
+}
+
+// TableName ensures proper table naming to match database reality
+func (EventInfo) TableName() string {
+	return "event_infos"
+}

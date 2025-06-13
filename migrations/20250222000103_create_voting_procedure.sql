@@ -15,5 +15,5 @@ CREATE TABLE voting_procedure (
     FOREIGN KEY (committee_voter) REFERENCES committee_hash (id),
     FOREIGN KEY (drep_voter) REFERENCES drep_hash (id),
     FOREIGN KEY (pool_voter) REFERENCES pool_hash (id),
-    FOREIGN KEY (voting_anchor_id) REFERENCES voting_anchor (id)
+    FOREIGN KEY (voting_anchor_id) REFERENCES voting_anchors (id)
 );

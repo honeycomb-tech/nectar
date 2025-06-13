@@ -6,5 +6,5 @@ CREATE TABLE committee_de_registration (
     voting_anchor_id BIGINT NOT NULL,
     FOREIGN KEY (tx_id) REFERENCES tx (id),
     FOREIGN KEY (cold_key_id) REFERENCES committee_hash (id),
-    FOREIGN KEY (voting_anchor_id) REFERENCES voting_anchor (id)
+    FOREIGN KEY (voting_anchor_id) REFERENCES voting_anchors (id)
 );

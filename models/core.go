@@ -28,6 +28,11 @@ type Block struct {
 	Txes       []Tx       `gorm:"foreignKey:BlockID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (Block) TableName() string {
+	return "blocks"
+}
+
 // SlotLeader represents slot leaders
 type SlotLeader struct {
 	ID          uint64  `gorm:"primaryKey;autoIncrement"`
@@ -38,6 +43,11 @@ type SlotLeader struct {
 	// Relationships
 	PoolHash *PoolHash `gorm:"foreignKey:PoolHashID"`
 	Blocks   []Block   `gorm:"foreignKey:SlotLeaderID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (SlotLeader) TableName() string {
+	return "slot_leaders"
 }
 
 // Epoch represents epochs
@@ -53,12 +63,17 @@ type Epoch struct {
 	// No relationships defined for this aggregate table
 }
 
+// TableName ensures proper table naming to match database reality
+func (Epoch) TableName() string {
+	return "epoches"
+}
+
 // Tx represents transactions
 type Tx struct {
 	ID               uint64  `gorm:"primaryKey;autoIncrement"`
 	Hash             []byte  `gorm:"type:VARBINARY(32);not null;uniqueIndex"`
-	BlockID          uint64  `gorm:"not null"`
-	BlockIndex       uint32  `gorm:"type:INT UNSIGNED;not null"`
+	BlockID          uint64  `gorm:"not null;index:idx_txes_block_id;index:idx_txes_block_id_index,priority:1"`
+	BlockIndex       uint32  `gorm:"type:INT UNSIGNED;not null;index:idx_txes_block_id_index,priority:2"`
 	OutSum           *uint64 `gorm:"type:BIGINT UNSIGNED"`
 	Fee              *uint64 `gorm:"type:BIGINT UNSIGNED"`
 	Deposit          *int64  `gorm:"type:BIGINT"`
@@ -76,13 +91,18 @@ type Tx struct {
 	TxMetadata []TxMetadata `gorm:"foreignKey:TxID"`
 }
 
+// TableName ensures proper table naming to match database reality
+func (Tx) TableName() string {
+	return "txes"
+}
+
 // TxOut represents transaction outputs
 type TxOut struct {
 	ID                uint64  `gorm:"primaryKey;autoIncrement"`
-	TxID              uint64  `gorm:"not null"`
-	Index             uint16  `gorm:"type:SMALLINT UNSIGNED;not null"`
-	Address           string  `gorm:"type:VARCHAR(255);not null"`
-	AddressRaw        []byte  `gorm:"type:VARBINARY(57)"`
+	TxID              uint64  `gorm:"not null;index:idx_tx_outs_tx_id;index:idx_tx_outs_tx_id_index,priority:1"`
+	Index             uint16  `gorm:"type:SMALLINT UNSIGNED;not null;index:idx_tx_outs_tx_id_index,priority:2"`
+	Address           string  `gorm:"type:VARCHAR(500);not null;index:idx_tx_outs_address"`
+	AddressRaw        []byte  `gorm:"type:VARBINARY(150)"`
 	AddressHasScript  bool    `gorm:"type:BOOLEAN;not null;default:false"`
 	PaymentCred       []byte  `gorm:"type:VARBINARY(28)"`
 	StakeAddressID    *uint64 `gorm:"type:BIGINT"`
@@ -92,11 +112,16 @@ type TxOut struct {
 	ReferenceScriptID *uint64 `gorm:"type:BIGINT"`
 
 	// Relationships
-	Tx              Tx            `gorm:"foreignKey:TxID"`
-	StakeAddress    *StakeAddress `gorm:"foreignKey:StakeAddressID"`
-	InlineDatum     *Datum        `gorm:"foreignKey:InlineDatumID"`
-	ReferenceScript *Script       `gorm:"foreignKey:ReferenceScriptID"`
-	TxIns           []TxIn        `gorm:"foreignKey:TxOutID"`
+	Tx               Tx       `gorm:"foreignKey:TxID"`
+	StakeAddress     *StakeAddress `gorm:"foreignKey:StakeAddressID"`
+	InlineDatum      *Datum   `gorm:"foreignKey:InlineDatumID"`
+	ReferenceScript  *Script  `gorm:"foreignKey:ReferenceScriptID"`
+	MaTxOuts         []MaTxOut `gorm:"foreignKey:TxOutID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (TxOut) TableName() string {
+	return "tx_outs"
 }
 
 // TxIn represents transaction inputs
@@ -111,4 +136,9 @@ type TxIn struct {
 	TxIn     Tx        `gorm:"foreignKey:TxInID"`
 	TxOut    TxOut     `gorm:"foreignKey:TxOutID"`
 	Redeemer *Redeemer `gorm:"foreignKey:RedeemerID"`
+}
+
+// TableName ensures proper table naming to match database reality
+func (TxIn) TableName() string {
+	return "tx_ins"
 }

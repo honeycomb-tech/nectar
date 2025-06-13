@@ -25,6 +25,6 @@ CREATE TABLE gov_action_proposal (
     FOREIGN KEY (tx_id) REFERENCES tx (id),
     FOREIGN KEY (prev_gov_action_proposal) REFERENCES gov_action_proposal (id),
     FOREIGN KEY (return_address) REFERENCES stake_address (id),
-    FOREIGN KEY (voting_anchor_id) REFERENCES voting_anchor (id),
+    FOREIGN KEY (voting_anchor_id) REFERENCES voting_anchors (id),
     FOREIGN KEY (param_proposal) REFERENCES param_proposal (id)
 );
