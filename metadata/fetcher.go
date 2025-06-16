@@ -59,7 +59,7 @@ func DefaultConfig() Config {
 
 // FetchRequest represents a metadata fetch request
 type FetchRequest struct {
-	ID           uint64
+	ID           int64
 	Type         string // "pool" or "governance"
 	URL          string
 	ExpectedHash []byte
@@ -148,15 +148,20 @@ func (f *Fetcher) Stop() error {
 }
 
 // QueuePoolMetadata queues a pool metadata fetch request
-func (f *Fetcher) QueuePoolMetadata(poolID, pmrID uint64, url string, hash []byte) error {
+func (f *Fetcher) QueuePoolMetadata(poolHash, pmrHash []byte, url string, hash []byte) error {
+	// Generate a pseudo-ID from the hash for compatibility with existing code
+	pmrID := hashToID(pmrHash)
+	
 	req := FetchRequest{
 		ID:           pmrID,
 		Type:         "pool",
 		URL:          url,
 		ExpectedHash: hash,
 		Context: map[string]interface{}{
-			"pool_id": poolID,
-			"pmr_id":  pmrID,
+			"pool_hash": poolHash,
+			"pmr_hash":  pmrHash,
+			"pool_id":   hashToID(poolHash), // Keep for backward compatibility
+			"pmr_id":    pmrID,
 		},
 	}
 
@@ -171,14 +176,18 @@ func (f *Fetcher) QueuePoolMetadata(poolID, pmrID uint64, url string, hash []byt
 }
 
 // QueueGovernanceMetadata queues a governance metadata fetch request
-func (f *Fetcher) QueueGovernanceMetadata(anchorID uint64, url string, hash []byte) error {
+func (f *Fetcher) QueueGovernanceMetadata(anchorHash []byte, url string, hash []byte) error {
+	// Generate a pseudo-ID from the hash for compatibility with existing code
+	anchorID := hashToID(anchorHash)
+	
 	req := FetchRequest{
 		ID:           anchorID,
 		Type:         "governance",
 		URL:          url,
 		ExpectedHash: hash,
 		Context: map[string]interface{}{
-			"anchor_id": anchorID,
+			"anchor_hash": anchorHash,
+			"anchor_id":   anchorID, // Keep for backward compatibility
 		},
 	}
 
@@ -361,8 +370,8 @@ func (f *Fetcher) verifyHash(data []byte, expectedHash []byte) bool {
 
 // storePoolMetadata stores fetched pool metadata
 func (f *Fetcher) storePoolMetadata(req FetchRequest, data []byte, jsonData interface{}) error {
-	poolID := req.Context["pool_id"].(uint64)
-	pmrID := req.Context["pmr_id"].(uint64)
+	// poolID := req.Context["pool_id"].(uint64) // Not used with hash-based model
+	// pmrID := req.Context["pmr_id"].(uint64) // Not used with hash-based model
 
 	// Parse pool metadata structure
 	var poolMeta struct {
@@ -381,14 +390,18 @@ func (f *Fetcher) storePoolMetadata(req FetchRequest, data []byte, jsonData inte
 		poolMeta.Ticker = poolMeta.Ticker[:5]
 	}
 
+	// Get pool and pmr hashes from context
+	poolHash := req.Context["pool_hash"].([]byte)
+	pmrHash := req.Context["pmr_hash"].([]byte)
+	
 	// Store in database
 	offChainData := &models.OffChainPoolData{
-		PoolID:     poolID,
-		TickerName: poolMeta.Ticker,
 		Hash:       req.ExpectedHash,
+		PoolHash:   poolHash,
+		TickerName: poolMeta.Ticker,
 		Json:       string(data),
 		Bytes:      data,
-		PmrID:      pmrID,
+		PmrHash:    pmrHash,
 	}
 
 	if err := f.db.Create(offChainData).Error; err != nil {
@@ -396,7 +409,7 @@ func (f *Fetcher) storePoolMetadata(req FetchRequest, data []byte, jsonData inte
 	}
 
 	logger.Info("Stored pool metadata",
-		"pool_id", poolID,
+		"pool_hash", hex.EncodeToString(poolHash),
 		"ticker", poolMeta.Ticker,
 		"name", poolMeta.Name,
 	)
@@ -406,7 +419,8 @@ func (f *Fetcher) storePoolMetadata(req FetchRequest, data []byte, jsonData inte
 
 // storeGovernanceMetadata stores fetched governance metadata
 func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonData interface{}) error {
-	anchorID := req.Context["anchor_id"].(uint64)
+	// anchorID := req.Context["anchor_id"].(uint64) // Not used with hash-based model
+	anchorHash := req.Context["anchor_hash"].([]byte)
 
 	// Parse CIP-119 JSON-LD structure
 	var govMeta map[string]interface{}
@@ -425,16 +439,19 @@ func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonDat
 		warning = "Invalid CIP-119 format"
 	}
 
+	// Get anchor hash from context (already declared above)
+	// anchorHash := req.Context["anchor_hash"].([]byte)
+	
 	// Store main vote data
 	voteData := &models.OffChainVoteData{
-		VotingAnchorID: anchorID,
-		Hash:           req.ExpectedHash,
-		Language:       language,
-		Comment:        &comment,
-		Json:           string(data),
-		Bytes:          data,
-		Warning:        &warning,
-		IsValid:        isValid,
+		Hash:             req.ExpectedHash,
+		VotingAnchorHash: anchorHash,
+		Language:         language,
+		Comment:          &comment,
+		Json:             string(data),
+		Bytes:            data,
+		Warning:          &warning,
+		IsValid:          isValid,
 	}
 
 	tx := f.db.Begin()
@@ -444,8 +461,9 @@ func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonDat
 	}
 
 	// Store additional governance data based on type
-	govMeta["anchorID"] = anchorID // Pass anchorID through meta
-	if err := f.storeGovernanceDetails(tx, voteData.ID, govMeta); err != nil {
+	govMeta["anchorHash"] = anchorHash // Pass anchorHash through meta
+	govMeta["voteDataHash"] = voteData.Hash // Pass vote data hash
+	if err := f.storeGovernanceDetails(tx, voteData.Hash, govMeta); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to store governance details: %w", err)
 	}
@@ -453,7 +471,7 @@ func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonDat
 	tx.Commit()
 
 	logger.Info("Stored governance metadata",
-		"anchor_id", anchorID,
+		"anchor_hash", hex.EncodeToString(anchorHash),
 		"type", govMeta["@type"],
 		"is_valid", isValid,
 	)
@@ -462,9 +480,9 @@ func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonDat
 }
 
 // storeGovernanceDetails stores type-specific governance metadata
-func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataID uint64, meta map[string]interface{}) error {
+func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataHash []byte, meta map[string]interface{}) error {
 	metaType, _ := meta["@type"].(string)
-	anchorID := meta["anchorID"].(uint64) // Pass through from caller
+	anchorHash := meta["anchorHash"].([]byte) // Pass through from caller
 
 	switch metaType {
 	case "GovernanceAction":
@@ -476,13 +494,13 @@ func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataID uint64, meta ma
 		language, _ := meta["@language"].(string)
 
 		govAction := &models.OffChainVoteGovActionData{
-			OffChainVoteDataID: voteDataID,
-			VotingAnchorID:     anchorID,
-			Language:           language,
-			Title:              &title,
-			Abstract:           &abstract,
-			Motivation:         &motivation,
-			Rationale:          &rationale,
+			OffChainVoteDataHash: voteDataHash,
+			VotingAnchorHash:     anchorHash,
+			Language:             language,
+			Title:                &title,
+			Abstract:             &abstract,
+			Motivation:           &motivation,
+			Rationale:            &rationale,
 		}
 		if err := tx.Create(govAction).Error; err != nil {
 			return err
@@ -502,22 +520,24 @@ func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataID uint64, meta ma
 		qualifications, _ := meta["qualifications"].(string)
 		doNotList, _ := meta["doNotList"].(bool)
 
+		// TODO: Get actual DRep hash from context
+		drepHashRaw := []byte{} // This should come from the transaction context
+		
 		drepData := &models.OffChainVoteDRepData{
-			OffChainVoteDataID: voteDataID,
-			VotingAnchorID:     anchorID,
-			Language:           language,
-			Comment:            &comment,
-			Bio:                &bio,
-			Email:              &email,
-			PaymentAddress:     &paymentAddress,
-			GivenName:          &givenName,
-			Image:              &image,
-			Objectives:         &objectives,
-			Motivations:        &motivations,
-			Qualifications:     &qualifications,
-			DoNotList:          doNotList,
-			// Note: DRepHashID would need to be retrieved from the transaction context
-			DRepHashID:         1, // Placeholder - should be retrieved from context
+			OffChainVoteDataHash: voteDataHash,
+			DRepHashRaw:          drepHashRaw,
+			VotingAnchorHash:     anchorHash,
+			Language:             language,
+			Comment:              &comment,
+			Bio:                  &bio,
+			Email:                &email,
+			PaymentAddress:       &paymentAddress,
+			GivenName:            &givenName,
+			Image:                &image,
+			Objectives:           &objectives,
+			Motivations:          &motivations,
+			Qualifications:       &qualifications,
+			DoNotList:            doNotList,
 		}
 		if err := tx.Create(drepData).Error; err != nil {
 			return err
@@ -540,10 +560,14 @@ func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataID uint64, meta ma
 						witnessBytes = decoded
 					}
 				}
+				// Generate hash for author
+				authorHash := models.GenerateOffChainVoteAuthorHash(voteDataHash, &name, witnessBytes)
+				
 				authorData := &models.OffChainVoteAuthor{
-					OffChainVoteDataID: voteDataID,
-					Name:               &name,
-					Witness:            witnessBytes,
+					Hash:                 authorHash,
+					OffChainVoteDataHash: voteDataHash,
+					Name:                 &name,
+					Witness:              witnessBytes,
 				}
 				if err := tx.Create(authorData).Error; err != nil {
 					return err
@@ -566,10 +590,10 @@ func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataID uint64, meta ma
 					}
 				}
 				refData := &models.OffChainVoteReference{
-					OffChainVoteDataID: voteDataID,
-					Label:              label,
-					URI:                uri,
-					ReferenceHash:      referenceHash,
+					OffChainVoteDataHash: voteDataHash,
+					Label:                label,
+					URI:                  uri,
+					ReferenceHash:        referenceHash,
 				}
 				if err := tx.Create(refData).Error; err != nil {
 					return err
@@ -610,13 +634,13 @@ func (f *Fetcher) validateGovernanceMetadata(meta map[string]interface{}) bool {
 func (f *Fetcher) recordFetchError(req FetchRequest, err error) {
 	switch req.Type {
 	case "pool":
-		poolID := req.Context["pool_id"].(uint64)
-		pmrID := req.Context["pmr_id"].(uint64)
+		poolHash := req.Context["pool_hash"].([]byte)
+		pmrHash := req.Context["pmr_hash"].([]byte)
 		
 		fetchError := &models.OffChainPoolFetchError{
-			PoolID:     poolID,
+			PoolHash:   poolHash,
+			PmrHash:    pmrHash,
 			FetchTime:  time.Now(),
-			PmrID:      pmrID,
 			FetchError: err.Error(),
 			RetryCount: uint32(req.RetryCount),
 		}
@@ -626,13 +650,13 @@ func (f *Fetcher) recordFetchError(req FetchRequest, err error) {
 		}
 
 	case "governance":
-		anchorID := req.Context["anchor_id"].(uint64)
+		anchorHash := req.Context["anchor_hash"].([]byte)
 		
 		fetchError := &models.OffChainVoteFetchError{
-			VotingAnchorID: anchorID,
-			FetchTime:      time.Now(),
-			FetchError:     err.Error(),
-			RetryCount:     uint32(req.RetryCount),
+			VotingAnchorHash: anchorHash,
+			FetchTime:        time.Now(),
+			FetchError:       err.Error(),
+			RetryCount:       uint32(req.RetryCount),
 		}
 		
 		if dbErr := f.db.Create(fetchError).Error; dbErr != nil {
@@ -661,19 +685,19 @@ func (f *Fetcher) periodicScanner() {
 func (f *Fetcher) scanUnfetchedMetadata() {
 	// Scan for unfetched pool metadata
 	var unfetchedPools []struct {
-		PoolID uint64
-		PmrID  uint64
-		URL    string
-		Hash   []byte
+		PoolHash []byte
+		PmrHash  []byte
+		URL      string
+		Hash     []byte
 	}
 
 	query := `
-		SELECT pmr.pool_id, pmr.id as pmr_id, pmr.url, pmr.hash
+		SELECT pmr.pool_hash, pmr.hash as pmr_hash, pmr.url, pmr.hash
 		FROM pool_metadata_refs pmr
-		LEFT JOIN off_chain_pool_data ocpd ON pmr.id = ocpd.pmr_id
-		LEFT JOIN off_chain_pool_fetch_error ocpfe ON pmr.id = ocpfe.pmr_id
-		WHERE ocpd.id IS NULL 
-		AND (ocpfe.id IS NULL OR ocpfe.retry_count < ?)
+		LEFT JOIN off_chain_pool_data ocpd ON pmr.hash = ocpd.pmr_hash
+		LEFT JOIN off_chain_pool_fetch_errors ocpfe ON pmr.hash = ocpfe.pmr_hash
+		WHERE ocpd.pmr_hash IS NULL 
+		AND (ocpfe.pmr_hash IS NULL OR ocpfe.retry_count < ?)
 		LIMIT 100
 	`
 
@@ -683,25 +707,25 @@ func (f *Fetcher) scanUnfetchedMetadata() {
 	}
 
 	for _, pool := range unfetchedPools {
-		if err := f.QueuePoolMetadata(pool.PoolID, pool.PmrID, pool.URL, pool.Hash); err != nil {
+		if err := f.QueuePoolMetadata(pool.PoolHash, pool.PmrHash, pool.URL, pool.Hash); err != nil {
 			logger.Debug("Failed to queue pool metadata", "error", err)
 		}
 	}
 
 	// Scan for unfetched governance metadata
 	var unfetchedAnchors []struct {
-		AnchorID uint64
-		URL      string
-		Hash     []byte
+		AnchorHash []byte
+		URL        string
+		Hash       []byte
 	}
 
 	query = `
-		SELECT va.id as anchor_id, va.url, va.data_hash as hash
+		SELECT va.hash as anchor_hash, va.url, va.data_hash as hash
 		FROM voting_anchors va
-		LEFT JOIN off_chain_vote_data ocvd ON va.id = ocvd.voting_anchor_id
-		LEFT JOIN off_chain_vote_fetch_errors ocvfe ON va.id = ocvfe.voting_anchor_id
-		WHERE ocvd.id IS NULL
-		AND (ocvfe.id IS NULL OR ocvfe.retry_count < ?)
+		LEFT JOIN off_chain_vote_data ocvd ON va.hash = ocvd.voting_anchor_hash
+		LEFT JOIN off_chain_vote_fetch_errors ocvfe ON va.hash = ocvfe.voting_anchor_hash
+		WHERE ocvd.voting_anchor_hash IS NULL
+		AND (ocvfe.voting_anchor_hash IS NULL OR ocvfe.retry_count < ?)
 		LIMIT 100
 	`
 
@@ -711,7 +735,7 @@ func (f *Fetcher) scanUnfetchedMetadata() {
 	}
 
 	for _, anchor := range unfetchedAnchors {
-		if err := f.QueueGovernanceMetadata(anchor.AnchorID, anchor.URL, anchor.Hash); err != nil {
+		if err := f.QueueGovernanceMetadata(anchor.AnchorHash, anchor.URL, anchor.Hash); err != nil {
 			logger.Debug("Failed to queue governance metadata", "error", err)
 		}
 	}
@@ -761,3 +785,24 @@ var (
 	logger    = simpleLogger{}
 	debugMode = false
 )
+
+// hashToID converts a hash to a pseudo-ID for compatibility
+// This is a temporary solution for backward compatibility with existing code
+func hashToID(hash []byte) int64 {
+	if len(hash) == 0 {
+		return 0
+	}
+	
+	// Use first 8 bytes of hash as a pseudo-ID
+	var id int64
+	for i := 0; i < 8 && i < len(hash); i++ {
+		id = (id << 8) | int64(hash[i])
+	}
+	
+	// Ensure positive
+	if id < 0 {
+		id = -id
+	}
+	
+	return id
+}

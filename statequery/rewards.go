@@ -91,21 +91,21 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 		poolReward, delegatorRewards := rc.calculatePoolRewards(pool, poolRewards, epochNo-2)
 		
 		// Store pool leader reward
-		if poolReward > 0 && pool.RewardAddrID > 0 {
+		if poolReward > 0 && len(pool.RewardAddrHash) > 0 {
 			// Verify stake address exists before creating reward
 			var exists bool
-			if err := tx.Model(&models.StakeAddress{}).Select("count(*) > 0").Where("id = ?", pool.RewardAddrID).Find(&exists).Error; err != nil || !exists {
-				log.Printf("[WARNING] Skipping leader reward - stake address %d doesn't exist", pool.RewardAddrID)
+			if err := tx.Model(&models.StakeAddress{}).Select("count(*) > 0").Where("hash_raw = ?", pool.RewardAddrHash).Find(&exists).Error; err != nil || !exists {
+				log.Printf("[WARNING] Skipping leader reward - stake address doesn't exist")
 				continue
 			}
 			
 			leaderReward := &models.Reward{
-				AddrID:         pool.RewardAddrID,
+				AddrHash:       pool.RewardAddrHash,
 				Type:           "leader",
-				Amount:         poolReward,
+				Amount:         int64(poolReward),
 				EarnedEpoch:    epochNo - 2,
 				SpendableEpoch: epochNo + 1,
-				PoolID:         pool.ID,
+				PoolHash:       pool.PoolHash,
 			}
 			if err := tx.Create(leaderReward).Error; err != nil {
 				log.Printf("[WARNING] Failed to create leader reward: %v", err)
@@ -115,22 +115,25 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 		}
 
 		// Store delegator rewards
-		for addrID, amount := range delegatorRewards {
-			if amount > 0 && addrID > 0 {
+		for addrHashStr, amount := range delegatorRewards {
+			if amount > 0 && len(addrHashStr) > 0 {
+				// Convert string back to bytes
+				addrHash := []byte(addrHashStr)
+				
 				// Verify stake address exists before creating reward
 				var exists bool
-				if err := tx.Model(&models.StakeAddress{}).Select("count(*) > 0").Where("id = ?", addrID).Find(&exists).Error; err != nil || !exists {
-					log.Printf("[WARNING] Skipping delegator reward - stake address %d doesn't exist", addrID)
+				if err := tx.Model(&models.StakeAddress{}).Select("count(*) > 0").Where("hash_raw = ?", addrHash).Find(&exists).Error; err != nil || !exists {
+					log.Printf("[WARNING] Skipping delegator reward - stake address doesn't exist")
 					continue
 				}
 				
 				delegatorReward := &models.Reward{
-					AddrID:         addrID,
+					AddrHash:       addrHash,
 					Type:           "member",
-					Amount:         amount,
+					Amount:         int64(amount),
 					EarnedEpoch:    epochNo - 2,
 					SpendableEpoch: epochNo + 1,
-					PoolID:         pool.ID,
+					PoolHash:       pool.PoolHash,
 				}
 				if err := tx.Create(delegatorReward).Error; err != nil {
 					log.Printf("[WARNING] Failed to create delegator reward: %v", err)
@@ -153,9 +156,9 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 			log.Printf("[WARNING] Failed to create treasury address: %v", err)
 		} else {
 			treasuryRest := &models.RewardRest{
-				AddrID:         treasuryAddr.ID,
+				AddrHash:       treasuryAddr.HashRaw,
 				Type:           "treasury",
-				Amount:         treasuryReward,
+				Amount:         int64(treasuryReward),
 				EarnedEpoch:    epochNo - 2,
 				SpendableEpoch: epochNo + 1,
 			}
@@ -192,13 +195,13 @@ func (rc *RewardCalculator) calculateRewardPot(epochNo uint32) uint64 {
 
 // PoolPerformance holds pool performance data
 type PoolPerformance struct {
-	ID            uint64
-	Pledge        uint64
-	Stake         uint64
-	BlocksMade    uint32
-	RewardAddrID  uint64
-	Margin        float64
-	Cost          uint64
+	PoolHash       []byte
+	Pledge         uint64
+	Stake          uint64
+	BlocksMade     uint32
+	RewardAddrHash []byte
+	Margin         float64
+	Cost           uint64
 }
 
 // getActivePoolsForEpoch gets pools that were active in the epoch
@@ -207,21 +210,20 @@ func (rc *RewardCalculator) getActivePoolsForEpoch(epochNo uint32) ([]PoolPerfor
 
 	query := `
 		SELECT DISTINCT 
-			ph.id,
+			ph.hash_raw as pool_hash,
 			pu.pledge,
 			COALESCE(ps.delegated_stake, 0) as stake,
 			COALESCE(ps.block_cnt, 0) as blocks_made,
-			sa.id as reward_addr_id,
+			pu.reward_addr_hash,
 			pu.margin,
-			pu.cost
-		FROM pool_hash ph
-		JOIN pool_update pu ON ph.id = pu.hash_id
-		LEFT JOIN pool_stat ps ON ph.id = ps.pool_id AND ps.epoch_no = ?
-		LEFT JOIN stake_address sa ON pu.reward_addr = sa.hash_raw
+			pu.fixed_cost as cost
+		FROM pool_hashes ph
+		JOIN pool_updates pu ON ph.hash_raw = pu.pool_hash
+		LEFT JOIN pool_stats ps ON ph.hash_raw = ps.pool_hash AND ps.epoch_no = ?
 		WHERE pu.active_epoch_no <= ?
 		AND NOT EXISTS (
-			SELECT 1 FROM pool_retire pr 
-			WHERE pr.hash_id = ph.id 
+			SELECT 1 FROM pool_retires pr 
+			WHERE pr.pool_hash = ph.hash_raw 
 			AND pr.retiring_epoch <= ?
 		)
 	`
@@ -234,7 +236,7 @@ func (rc *RewardCalculator) getActivePoolsForEpoch(epochNo uint32) ([]PoolPerfor
 }
 
 // calculatePoolRewards calculates rewards for a pool and its delegators
-func (rc *RewardCalculator) calculatePoolRewards(pool PoolPerformance, totalPoolRewards uint64, epochNo uint32) (uint64, map[uint64]uint64) {
+func (rc *RewardCalculator) calculatePoolRewards(pool PoolPerformance, totalPoolRewards uint64, epochNo uint32) (uint64, map[string]uint64) {
 	// Simplified reward calculation
 	// In reality, this is much more complex and involves:
 	// - Pool saturation
@@ -273,34 +275,38 @@ func (rc *RewardCalculator) calculatePoolRewards(pool PoolPerformance, totalPool
 	}
 
 	// Remaining rewards go to delegators
-	delegatorRewards := make(map[uint64]uint64)
+	delegatorRewards := make(map[string]uint64)
 	if poolTotalReward > operatorReward {
 		remainingRewards := poolTotalReward - operatorReward
 		
 		// Get delegators for this pool
 		var delegations []struct {
-			AddrID uint64
-			Amount uint64
+			AddrHash []byte
+			Amount   uint64
 		}
 		
 		// Query delegations active during this epoch
 		query := `
 			SELECT 
-				d.addr_id,
+				d.addr_hash,
 				COALESCE(SUM(txo.value), 0) as amount
-			FROM delegation d
-			JOIN tx_out txo ON txo.stake_address_id = d.addr_id
-			WHERE d.pool_hash_id = ?
+			FROM delegations d
+			JOIN tx_outs txo ON txo.stake_address_hash = d.addr_hash
+			WHERE d.pool_hash = ?
 			AND d.active_epoch_no <= ?
 			AND NOT EXISTS (
-				SELECT 1 FROM stake_deregistration sd
-				WHERE sd.addr_id = d.addr_id
-				AND sd.epoch_no <= ?
+				SELECT 1 FROM stake_deregistrations sd
+				WHERE sd.addr_hash = d.addr_hash
+				AND sd.tx_hash IN (
+					SELECT hash FROM txes t
+					JOIN blocks b ON t.block_hash = b.hash
+					WHERE b.epoch_no <= ?
+				)
 			)
-			GROUP BY d.addr_id
+			GROUP BY d.addr_hash
 		`
 		
-		if err := rc.db.Raw(query, pool.ID, epochNo, epochNo).Scan(&delegations).Error; err == nil {
+		if err := rc.db.Raw(query, pool.PoolHash, epochNo, epochNo).Scan(&delegations).Error; err == nil {
 			// Distribute rewards proportionally
 			var totalDelegated uint64
 			for _, d := range delegations {
@@ -312,7 +318,8 @@ func (rc *RewardCalculator) calculatePoolRewards(pool PoolPerformance, totalPool
 					share := float64(d.Amount) / float64(totalDelegated)
 					reward := uint64(float64(remainingRewards) * share)
 					if reward > 0 {
-						delegatorRewards[d.AddrID] = reward
+						// Use hex string of address hash as map key
+						delegatorRewards[string(d.AddrHash)] = reward
 					}
 				}
 			}
@@ -327,8 +334,22 @@ func (rc *RewardCalculator) ProcessRefunds(epochNo uint32) error {
 	log.Printf("Processing refunds for epoch %d", epochNo)
 
 	// Find stake deregistrations that should be refunded in this epoch
-	var deregistrations []models.StakeDeregistration
-	err := rc.db.Where("epoch_no = ?", epochNo-2).Find(&deregistrations).Error
+	// Note: We need to join with blocks to get epoch info
+	var deregistrations []struct {
+		AddrHash []byte
+		Deposit  int64
+	}
+	
+	query := `
+		SELECT sd.addr_hash, 2000000 as deposit
+		FROM stake_deregistrations sd
+		JOIN txes t ON sd.tx_hash = t.hash
+		JOIN blocks b ON t.block_hash = b.hash
+		WHERE b.epoch_no = ?
+		GROUP BY sd.addr_hash
+	`
+	
+	err := rc.db.Raw(query, epochNo-2).Scan(&deregistrations).Error
 	if err != nil {
 		return fmt.Errorf("failed to get deregistrations: %w", err)
 	}
@@ -337,21 +358,21 @@ func (rc *RewardCalculator) ProcessRefunds(epochNo uint32) error {
 	refundCount := 0
 
 	for _, dereg := range deregistrations {
-		if dereg.Refund > 0 && dereg.AddrID > 0 {
+		if dereg.Deposit > 0 && len(dereg.AddrHash) > 0 {
 			// Verify stake address exists before creating refund
 			var exists bool
-			if err := tx.Model(&models.StakeAddress{}).Select("count(*) > 0").Where("id = ?", dereg.AddrID).Find(&exists).Error; err != nil || !exists {
-				log.Printf("[WARNING] Skipping refund - stake address %d doesn't exist", dereg.AddrID)
+			if err := tx.Model(&models.StakeAddress{}).Select("count(*) > 0").Where("hash_raw = ?", dereg.AddrHash).Find(&exists).Error; err != nil || !exists {
+				log.Printf("[WARNING] Skipping refund - stake address doesn't exist")
 				continue
 			}
 			
 			refund := &models.Reward{
-				AddrID:         dereg.AddrID,
+				AddrHash:       dereg.AddrHash,
 				Type:           "refund",
-				Amount:         dereg.Refund,
+				Amount:         dereg.Deposit,
 				EarnedEpoch:    epochNo - 2,
 				SpendableEpoch: epochNo,
-				PoolID:         0, // No pool for refunds
+				PoolHash:       nil, // No pool for refunds
 			}
 			
 			if err := tx.Create(refund).Error; err != nil {

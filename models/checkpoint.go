@@ -1,19 +1,22 @@
 package models
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"time"
+	
+	"gorm.io/gorm"
 )
 
-// SyncCheckpoint represents a checkpoint in the blockchain sync process
+// SyncCheckpoint represents a checkpoint in the blockchain sync process with hash as primary key
 type SyncCheckpoint struct {
-	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	Hash []byte `gorm:"type:VARBINARY(32);primaryKey" json:"hash"` // Hash of SlotNo+BlockHash
 
 	// Blockchain position
-	SlotNo    uint64 `gorm:"type:BIGINT UNSIGNED;not null;index:idx_slot_no" json:"slot_no"`
-	BlockHash string `gorm:"type:VARCHAR(64);not null" json:"block_hash"`
-	BlockID   uint64 `gorm:"type:BIGINT UNSIGNED;not null" json:"block_id"`
-	Era       string `gorm:"type:VARCHAR(20);not null;index:idx_era" json:"era"`
+	SlotNo    uint64 `gorm:"type:BIGINT UNSIGNED;not null;uniqueIndex" json:"slot_no"`
+	BlockHash []byte `gorm:"type:VARBINARY(32);not null" json:"block_hash"`
+	Era       string `gorm:"type:VARCHAR(20);not null;index" json:"era"`
 	EpochNo   uint32 `gorm:"type:INT UNSIGNED;not null" json:"epoch_no"`
 
 	// Checkpoint metadata
@@ -26,9 +29,10 @@ type SyncCheckpoint struct {
 	TableCounts   string `gorm:"type:JSON;not null" json:"table_counts"` // JSON string of table counts
 
 	// Reference points for resume
-	LastTxID    uint64 `gorm:"type:BIGINT UNSIGNED;not null" json:"last_tx_id"`
-	LastBlockID uint64 `gorm:"type:BIGINT UNSIGNED;not null" json:"last_block_id"`
-	LastTxOutID uint64 `gorm:"type:BIGINT UNSIGNED;not null" json:"last_tx_out_id"`
+	LastTxHash    []byte `gorm:"type:VARBINARY(32);not null" json:"last_tx_hash"`
+	LastBlockHash []byte `gorm:"type:VARBINARY(32);not null" json:"last_block_hash"`
+	LastTxOutHash []byte `gorm:"type:VARBINARY(32);not null" json:"last_tx_out_hash"`
+	LastTxOutIndex uint32 `gorm:"type:INT UNSIGNED;not null" json:"last_tx_out_index"`
 
 	// Performance stats at checkpoint
 	TotalBlocks     uint64  `gorm:"type:BIGINT UNSIGNED;not null" json:"total_blocks"`
@@ -39,23 +43,31 @@ type SyncCheckpoint struct {
 	Notes string `gorm:"type:TEXT" json:"notes"`
 
 	// Relationships
-	ResumeAttempts []CheckpointResumeLog `gorm:"foreignKey:CheckpointID" json:"resume_attempts,omitempty"`
+	ResumeAttempts []CheckpointResumeLog `gorm:"foreignKey:CheckpointHash;references:Hash" json:"resume_attempts,omitempty"`
 }
 
-// CheckpointResumeLog tracks attempts to resume from checkpoints
+// GenerateSyncCheckpointHash generates a unique hash for a sync checkpoint
+func GenerateSyncCheckpointHash(slotNo uint64, blockHash []byte) []byte {
+	h := sha256.New()
+	slotBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(slotBytes, slotNo)
+	h.Write(slotBytes)
+	h.Write(blockHash)
+	return h.Sum(nil)
+}
+
+// CheckpointResumeLog tracks attempts to resume from checkpoints with composite primary key
 type CheckpointResumeLog struct {
-	ID                  uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	CheckpointID        uint64    `gorm:"type:BIGINT UNSIGNED;not null" json:"checkpoint_id"`
-	ResumeAttemptedAt   time.Time `gorm:"type:TIMESTAMP;default:CURRENT_TIMESTAMP;index:idx_attempted_at" json:"resume_attempted_at"`
-	ResumeSuccessful    bool      `gorm:"type:BOOLEAN;default:false;index:idx_successful" json:"resume_successful"`
+	CheckpointHash      []byte    `gorm:"type:VARBINARY(32);primaryKey" json:"checkpoint_hash"`
+	ResumeAttemptedAt   time.Time `gorm:"type:TIMESTAMP;primaryKey;default:CURRENT_TIMESTAMP" json:"resume_attempted_at"`
+	ResumeSuccessful    bool      `gorm:"type:BOOLEAN;default:false;index" json:"resume_successful"`
 	ErrorMessage        string    `gorm:"type:TEXT" json:"error_message,omitempty"`
 	RecoveryTimeSeconds uint32    `gorm:"type:INT UNSIGNED" json:"recovery_time_seconds"`
 
 	// Relationships
-	Checkpoint SyncCheckpoint `gorm:"foreignKey:CheckpointID" json:"checkpoint,omitempty"`
+	Checkpoint SyncCheckpoint `gorm:"foreignKey:CheckpointHash;references:Hash" json:"checkpoint,omitempty"`
 }
 
-// TableName ensures proper table naming
 func (SyncCheckpoint) TableName() string {
 	return "sync_checkpoints"
 }
@@ -63,6 +75,10 @@ func (SyncCheckpoint) TableName() string {
 func (CheckpointResumeLog) TableName() string {
 	return "checkpoint_resume_log"
 }
+
+// Remove all BeforeCreate hooks since we don't need ID management
+func (s *SyncCheckpoint) BeforeCreate(tx *gorm.DB) error { return nil }
+func (c *CheckpointResumeLog) BeforeCreate(tx *gorm.DB) error { return nil }
 
 // CheckpointType constants
 const (

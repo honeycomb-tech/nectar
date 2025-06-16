@@ -169,9 +169,10 @@ type ActivityFeed struct {
 // ReferenceAlignedIndexer follows the exact gouroboros reference pattern
 type ReferenceAlignedIndexer struct {
 	// Core components - sequential processing
-	dbConnections []*processors.BlockProcessor
-	ctx           context.Context
-	cancel        context.CancelFunc
+	dbConnections   []*processors.BlockProcessor
+	processorIndex  uint64  // For round-robin connection selection
+	ctx             context.Context
+	cancel          context.CancelFunc
 
 	// SINGLE MULTIPLEXED CONNECTION - Reference Pattern
 	oConn     *ouroboros.Connection
@@ -208,6 +209,10 @@ type ReferenceAlignedIndexer struct {
 	
 	// Dashboard renderer for smooth animations
 	dashboardRenderer *dashboard.DashboardRenderer
+	
+	// Sync mode tracking
+	isBulkSync      atomic.Bool
+	bulkSyncEndSlot uint64
 }
 
 type PerformanceStats struct {
@@ -737,11 +742,11 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollBackwardHandler(
 			return fmt.Errorf("failed to find rollback target block: %w", err)
 		}
 
-		log.Printf(" Found rollback target: block ID %d at slot %d", targetBlock.ID, point.Slot)
+		log.Printf(" Found rollback target: block hash %x at slot %d", targetBlock.Hash, point.Slot)
 
 		// Delete all blocks after the target block
 		// This will cascade to transactions and related data due to foreign keys
-		result := tx.Where("id > ?", targetBlock.ID).Delete(&models.Block{})
+		result := tx.Where("slot_no > ?", targetBlock.SlotNo).Delete(&models.Block{})
 		if result.Error != nil {
 			return fmt.Errorf("failed to delete blocks after rollback point: %w", result.Error)
 		}
@@ -749,7 +754,7 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollBackwardHandler(
 		log.Printf(" Deleted %d blocks after rollback point", result.RowsAffected)
 
 		// Also clean up any orphaned data that might not have cascade deletes
-		if err := rai.cleanupOrphanedData(tx, targetBlock.ID); err != nil {
+		if err := rai.cleanupOrphanedData(tx, targetBlock.Hash); err != nil {
 			log.Printf("[WARNING] Failed to cleanup orphaned data: %v", err)
 			// Don't fail the rollback for cleanup issues
 		}
@@ -852,13 +857,47 @@ func (rai *ReferenceAlignedIndexer) processBlockSequentially(block ledger.Block,
 	if len(rai.dbConnections) == 0 {
 		return fmt.Errorf("no database connections available")
 	}
+	
+	// Detect bulk sync mode
+	currentSlot := block.SlotNumber()
+	tipSlot := rai.tipSlot.Load()
+	
+	// If we're more than 10,000 slots behind, enable bulk sync mode
+	if tipSlot > 0 && currentSlot > 0 {
+		slotGap := tipSlot - currentSlot
+		
+		// Enable bulk sync if we're far behind
+		if slotGap > 10000 && !rai.isBulkSync.Load() {
+			rai.isBulkSync.Store(true)
+			rai.bulkSyncEndSlot = tipSlot - 1000 // Switch to normal mode 1000 slots from tip
+			log.Printf("Entering BULK SYNC mode (gap: %d slots)", slotGap)
+			
+			// Disable some checks for performance
+			if len(rai.dbConnections) > 0 {
+				db := rai.dbConnections[0].GetDB()
+				db.Exec("SET FOREIGN_KEY_CHECKS = 0")
+			}
+		}
+		
+		// Check if we should exit bulk sync
+		if rai.isBulkSync.Load() && currentSlot >= rai.bulkSyncEndSlot {
+			rai.isBulkSync.Store(false)
+			log.Printf("Exiting BULK SYNC mode, approaching chain tip")
+			
+			// Re-enable checks
+			if len(rai.dbConnections) > 0 {
+				db := rai.dbConnections[0].GetDB()
+				db.Exec("SET FOREIGN_KEY_CHECKS = 1")
+			}
+		}
+	}
 
-	processor := rai.dbConnections[0] // Use first (and only) connection
+	// Round-robin connection selection for better load distribution
+	processorIndex := atomic.AddUint64(&rai.processorIndex, 1) % uint64(len(rai.dbConnections))
+	blockProcessor := rai.dbConnections[processorIndex]
 
-	// Process the block directly using block processor (it handles its own transaction)
-	db := processor.GetDB()
-	blockProcessor := processors.NewBlockProcessor(db)
-	err := blockProcessor.ProcessBlockWithType(rai.ctx, block, blockType)
+	// Process the block directly using the existing processor
+	err := blockProcessor.ProcessBlock(rai.ctx, block, blockType)
 	if err != nil {
 		errors.Get().ProcessingError("BlockProcessor", "ProcessBlock", fmt.Errorf("failed to process block slot %d: %w", block.SlotNumber(), err))
 		return fmt.Errorf("failed to process block: %w", err)
@@ -1152,6 +1191,11 @@ func (rai *ReferenceAlignedIndexer) calculateEraProgress(data *dashboard.Dashboa
 		data.CurrentEra = "Byron"
 		data.EraProgress = data.ByronProgress
 	}
+	
+	// Add bulk sync indicator
+	if rai.isBulkSync.Load() {
+		data.CurrentEra = data.CurrentEra + " [BULK SYNC]"
+	}
 }
 
 func (rai *ReferenceAlignedIndexer) getRecentActivities() []dashboard.ActivityData {
@@ -1355,27 +1399,21 @@ func (rai *ReferenceAlignedIndexer) performFullRollback(tx *gorm.DB, slot uint64
 }
 
 // cleanupOrphanedData cleans up data that might not have proper cascade deletes
-func (rai *ReferenceAlignedIndexer) cleanupOrphanedData(tx *gorm.DB, maxBlockID uint64) error {
+func (rai *ReferenceAlignedIndexer) cleanupOrphanedData(tx *gorm.DB, maxBlockHash []byte) error {
 	// Clean up epoch data if we rolled back past an epoch boundary
 	var maxEpoch uint32
 	var maxSlot uint64
 
-	err := tx.Model(&models.Block{}).
-		Where("id <= ?", maxBlockID).
-		Select("COALESCE(MAX(epoch_no), 0)").
-		Scan(&maxEpoch).Error
-	if err != nil {
-		return fmt.Errorf("failed to get max epoch: %w", err)
+	// Get the max slot from the target block
+	var targetBlock models.Block
+	if err := tx.Where("hash = ?", maxBlockHash).First(&targetBlock).Error; err != nil {
+		return fmt.Errorf("failed to get target block: %w", err)
 	}
+	
+	maxEpoch = *targetBlock.EpochNo
+	maxSlot = *targetBlock.SlotNo
 
-	// Get max slot from remaining blocks
-	err = tx.Model(&models.Block{}).
-		Where("id <= ?", maxBlockID).
-		Select("COALESCE(MAX(slot_no), 0)").
-		Scan(&maxSlot).Error
-	if err != nil {
-		return fmt.Errorf("failed to get max slot: %w", err)
-	}
+	// maxSlot is already set from targetBlock above
 
 	// Delete epoch records beyond the current max
 	if result := tx.Where("no > ?", maxEpoch).Delete(&models.Epoch{}); result.Error != nil {

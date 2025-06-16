@@ -1,5 +1,11 @@
 package models
 
+import (
+	"crypto/sha256"
+	"unsafe"
+	"gorm.io/gorm"
+)
+
 // Custom ENUM types for governance
 type VoterRole string
 const (
@@ -15,68 +21,73 @@ const (
 	VoteChoiceAbstain VoteChoice = "Abstain"
 )
 
-// VotingProcedure represents CIP-1694 voting procedures
+// VotingProcedure represents CIP-1694 voting procedures with composite primary key
 type VotingProcedure struct {
-	ID                  uint64    `gorm:"primaryKey;autoIncrement"`
-	TxID                uint64    `gorm:"not null;index"`
-	Index               int32     `gorm:"not null"`
-	GovActionProposalID uint64    `gorm:"not null;index"`
-	VoterRole           VoterRole `gorm:"type:ENUM('ConstitutionalCommittee','DRep','SPO');not null;index"`
-	CommitteeVoter      *uint64   `gorm:"type:BIGINT"`
-	DRepVoter           *uint64   `gorm:"type:BIGINT"`
-	PoolVoter           *uint64   `gorm:"type:BIGINT"`
-	Vote                VoteChoice `gorm:"type:ENUM('Yes','No','Abstain');not null;index"`
-	VotingAnchorID      *uint64   `gorm:"type:BIGINT"`
-	Invalid             *uint64   `gorm:"type:BIGINT"`
+	TxHash                []byte     `gorm:"type:VARBINARY(32);primaryKey"`
+	Index                 uint32     `gorm:"type:INT UNSIGNED;primaryKey"`
+	GovActionProposalHash []byte     `gorm:"type:VARBINARY(32);not null;index"`
+	VoterRole             VoterRole  `gorm:"type:VARCHAR(32);not null;index"`
+	CommitteeVoter        []byte     `gorm:"type:VARBINARY(28);index"`
+	DRepVoter             []byte     `gorm:"type:VARBINARY(28);index"`
+	PoolVoter             []byte     `gorm:"type:VARBINARY(28);index"`
+	Vote                  VoteChoice `gorm:"type:VARCHAR(16);not null;index"`
+	VotingAnchorHash      []byte     `gorm:"type:VARBINARY(32);index"`
+	Invalid               *bool      `gorm:"default:false"`
 
 	// Relationships
-	Tx                  Tx              `gorm:"foreignKey:TxID"`
-	GovActionProposal   GovActionProposal `gorm:"foreignKey:GovActionProposalID"`
-	CommitteeVoterHash  *CommitteeHash  `gorm:"foreignKey:CommitteeVoter"`
-	DRepVoterHash       *DRepHash       `gorm:"foreignKey:DRepVoter"`
-	PoolVoterHash       *PoolHash       `gorm:"foreignKey:PoolVoter"`
-	VotingAnchor        *VotingAnchor   `gorm:"foreignKey:VotingAnchorID"`
+	Tx                  Tx                 `gorm:"foreignKey:TxHash;references:Hash"`
+	GovActionProposal   GovActionProposal  `gorm:"foreignKey:GovActionProposalHash;references:Hash"`
+	CommitteeVoterHash  *CommitteeHash     `gorm:"foreignKey:CommitteeVoter;references:HashRaw"`
+	DRepVoterHash       *DRepHash          `gorm:"foreignKey:DRepVoter;references:HashRaw"`
+	PoolVoterHash       *PoolHash          `gorm:"foreignKey:PoolVoter;references:HashRaw"`
+	VotingAnchor        *VotingAnchor      `gorm:"foreignKey:VotingAnchorHash;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (VotingProcedure) TableName() string {
 	return "voting_procedures"
 }
 
-// GovActionProposal represents governance action proposals
+// GovActionProposal represents governance action proposals with hash as primary key
 type GovActionProposal struct {
-	ID                  uint64  `gorm:"primaryKey;autoIncrement"`
-	TxID                uint64  `gorm:"not null"`
-	Index               int32   `gorm:"not null"`
-	PrevGovActionIndex  *int32  `gorm:"type:INT"`
-	PrevGovActionTxID   *uint64 `gorm:"type:BIGINT"`
-	Type                string  `gorm:"type:VARCHAR(50);not null"`
+	Hash                []byte  `gorm:"type:VARBINARY(32);primaryKey"` // Hash of TxHash+Index
+	TxHash              []byte  `gorm:"type:VARBINARY(32);not null;index"`
+	Index               uint32  `gorm:"type:INT UNSIGNED;not null"`
+	PrevGovActionIndex  *uint32 `gorm:"type:INT UNSIGNED"`
+	PrevGovActionTxHash []byte  `gorm:"type:VARBINARY(32);index"`
+	Type                string  `gorm:"type:VARCHAR(50);not null;index"`
 	Description         string  `gorm:"type:TEXT"`
 	Deposit             uint64  `gorm:"type:BIGINT UNSIGNED;not null"`
-	ReturnedEpoch       *uint32 `gorm:"type:INT UNSIGNED"`
-	Expiration          *uint32 `gorm:"type:INT UNSIGNED"`
-	VotingAnchorID      *uint64 `gorm:"type:BIGINT"`
-	ParamProposalID     *uint64 `gorm:"type:BIGINT"`
+	ReturnedEpoch       *uint32 `gorm:"type:INT UNSIGNED;index"`
+	Expiration          *uint32 `gorm:"type:INT UNSIGNED;index"`
+	VotingAnchorHash    []byte  `gorm:"type:VARBINARY(32);index"`
+	ParamProposalHash   []byte  `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
-	Tx               Tx              `gorm:"foreignKey:TxID"`
-	PrevGovActionTx  *Tx             `gorm:"foreignKey:PrevGovActionTxID"`
-	VotingAnchor     *VotingAnchor   `gorm:"foreignKey:VotingAnchorID"`
-	ParamProposal    *ParamProposal  `gorm:"foreignKey:ParamProposalID"`
-	VotingProcedures []VotingProcedure `gorm:"foreignKey:GovActionProposalID"`
-	TreasuryWithdrawals []TreasuryWithdrawal `gorm:"foreignKey:GovActionProposalID"`
+	Tx                  Tx                   `gorm:"foreignKey:TxHash;references:Hash"`
+	PrevGovActionTx     *Tx                  `gorm:"foreignKey:PrevGovActionTxHash;references:Hash"`
+	VotingAnchor        *VotingAnchor        `gorm:"foreignKey:VotingAnchorHash;references:Hash"`
+	ParamProposal       *ParamProposal       `gorm:"foreignKey:ParamProposalHash;references:Hash"`
+	VotingProcedures    []VotingProcedure    `gorm:"foreignKey:GovActionProposalHash;references:Hash"`
+	TreasuryWithdrawals []TreasuryWithdrawal `gorm:"foreignKey:GovActionProposalHash;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (GovActionProposal) TableName() string {
 	return "gov_action_proposals"
 }
 
-// ParamProposal represents protocol parameter proposals
+// GenerateGovActionProposalHash generates a unique hash for a governance action proposal
+func GenerateGovActionProposalHash(txHash []byte, index uint32) []byte {
+	h := sha256.New()
+	h.Write(txHash)
+	h.Write([]byte{byte(index >> 24), byte(index >> 16), byte(index >> 8), byte(index)})
+	return h.Sum(nil)
+}
+
+// ParamProposal represents protocol parameter proposals with hash as primary key
 type ParamProposal struct {
-	ID                    uint64   `gorm:"primaryKey;autoIncrement"`
+	Hash                  []byte   `gorm:"type:VARBINARY(32);primaryKey"` // Hash of all params
 	EpochNo               uint32   `gorm:"type:INT UNSIGNED;not null;index"`
-	Key                   uint32   `gorm:"type:INT UNSIGNED;not null"`
+	Key                   uint32   `gorm:"type:INT UNSIGNED;not null;index"`
 	MinFeeA               *uint64  `gorm:"type:BIGINT UNSIGNED"`
 	MinFeeB               *uint64  `gorm:"type:BIGINT UNSIGNED"`
 	MaxBlockSize          *uint64  `gorm:"type:BIGINT UNSIGNED"`
@@ -95,7 +106,7 @@ type ParamProposal struct {
 	ProtocolMinor         *uint32  `gorm:"type:INT UNSIGNED"`
 	MinUtxoValue          *uint64  `gorm:"type:BIGINT UNSIGNED"`
 	MinPoolCost           *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	CostModelID           *uint64  `gorm:"type:BIGINT"`
+	CostModelHash         []byte   `gorm:"type:VARBINARY(32);index"`
 	PriceMem              *float64 `gorm:"type:DOUBLE"`
 	PriceStep             *float64 `gorm:"type:DOUBLE"`
 	MaxTxExMem            *uint64  `gorm:"type:BIGINT UNSIGNED"`
@@ -109,303 +120,323 @@ type ParamProposal struct {
 	CoinsPerUtxoWord      *uint64  `gorm:"type:BIGINT UNSIGNED"`
 
 	// Relationships
-	// Note: EpochParam relationship removed to fix foreign key constraint issues
-	// EpochParams should exist independently, not be constrained by ParamProposals
-	CostModel         *CostModel     `gorm:"foreignKey:CostModelID"`
-	GovActionProposals []GovActionProposal `gorm:"foreignKey:ParamProposalID"`
+	CostModel          *CostModel           `gorm:"foreignKey:CostModelHash;references:Hash"`
+	GovActionProposals []GovActionProposal  `gorm:"foreignKey:ParamProposalHash;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (ParamProposal) TableName() string {
 	return "param_proposals"
 }
 
-// DRepHash represents DRep hashes
+// DRepHash represents DRep hashes with hash as primary key
 type DRepHash struct {
-	ID       uint64 `gorm:"primaryKey;autoIncrement"`
-	Raw      []byte `gorm:"type:VARBINARY(28);not null;uniqueIndex"`
-	View     string `gorm:"type:VARCHAR(56);not null;uniqueIndex"`
-	HasScript bool  `gorm:"not null"`
+	HashRaw   []byte `gorm:"type:VARBINARY(28);primaryKey"`
+	View      string `gorm:"type:VARCHAR(56);not null;uniqueIndex"`
+	HasScript bool   `gorm:"not null"`
 
 	// Relationships
-	VotingProcedures     []VotingProcedure     `gorm:"foreignKey:DRepVoter"`
-	DelegationVotes      []DelegationVote      `gorm:"foreignKey:DRepHashID"`
-	DRepDistrs           []DRepDistr           `gorm:"foreignKey:HashID"`
+	VotingProcedures []VotingProcedure `gorm:"foreignKey:DRepVoter;references:HashRaw"`
+	DelegationVotes  []DelegationVote  `gorm:"foreignKey:DRepHash;references:HashRaw"`
+	DRepDistrs       []DRepDistr       `gorm:"foreignKey:HashRaw;references:HashRaw"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (DRepHash) TableName() string {
 	return "d_rep_hashes"
 }
 
-// CommitteeHash represents committee member hashes  
+// CommitteeHash represents committee member hashes with hash as primary key
 type CommitteeHash struct {
-	ID  uint64 `gorm:"primaryKey;autoIncrement"`
-	Raw []byte `gorm:"type:VARBINARY(28);not null;uniqueIndex"`
+	HashRaw []byte `gorm:"type:VARBINARY(28);primaryKey"`
 
 	// Relationships
-	VotingProcedures         []VotingProcedure         `gorm:"foreignKey:CommitteeVoter"`
-	CommitteeRegistrations   []CommitteeRegistration   `gorm:"foreignKey:ColdKeyID"`
-	CommitteeRegistrationsHot []CommitteeRegistration  `gorm:"foreignKey:HotKeyID"`
-	CommitteeDeregistrations []CommitteeDeregistration `gorm:"foreignKey:ColdKeyID"`
-	CommitteeMembers         []CommitteeMember         `gorm:"foreignKey:CommitteeHashID"`
+	VotingProcedures          []VotingProcedure         `gorm:"foreignKey:CommitteeVoter;references:HashRaw"`
+	CommitteeRegistrations    []CommitteeRegistration   `gorm:"foreignKey:ColdKeyHash;references:HashRaw"`
+	CommitteeRegistrationsHot []CommitteeRegistration   `gorm:"foreignKey:HotKeyHash;references:HashRaw"`
+	CommitteeDeregistrations  []CommitteeDeregistration `gorm:"foreignKey:ColdKeyHash;references:HashRaw"`
+	CommitteeMembers          []CommitteeMember         `gorm:"foreignKey:CommitteeHash;references:HashRaw"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (CommitteeHash) TableName() string {
 	return "committee_hashes"
 }
 
-// VotingAnchor represents voting anchor information
+// VotingAnchor represents voting anchor information with hash as primary key
 type VotingAnchor struct {
-	ID       uint64 `gorm:"primaryKey;autoIncrement"`
-	URL      string `gorm:"type:VARCHAR(128);not null"`
-	DataHash []byte `gorm:"type:VARBINARY(32);not null"`
+	Hash     []byte `gorm:"type:VARBINARY(32);primaryKey"` // Hash of URL+DataHash
+	URL      string `gorm:"type:VARCHAR(128);not null;index"`
+	DataHash []byte `gorm:"type:VARBINARY(32);not null;index"`
 
 	// Relationships
-	VotingProcedures   []VotingProcedure   `gorm:"foreignKey:VotingAnchorID"`
-	GovActionProposals []GovActionProposal `gorm:"foreignKey:VotingAnchorID"`
+	VotingProcedures   []VotingProcedure   `gorm:"foreignKey:VotingAnchorHash;references:Hash"`
+	GovActionProposals []GovActionProposal `gorm:"foreignKey:VotingAnchorHash;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (VotingAnchor) TableName() string {
 	return "voting_anchors"
 }
 
-// DelegationVote represents delegation votes
-type DelegationVote struct {
-	ID         uint64 `gorm:"primaryKey;autoIncrement"`
-	TxID       uint64 `gorm:"not null"`
-	CertIndex  int32  `gorm:"not null"`
-	AddrID     uint64 `gorm:"not null"`
-	DRepHashID uint64 `gorm:"not null"`
-	RedeemerID *uint64 `gorm:"type:BIGINT"`
-
-	// Relationships
-	Tx       Tx           `gorm:"foreignKey:TxID"`
-	Addr     StakeAddress `gorm:"foreignKey:AddrID"`
-	DRepHash DRepHash     `gorm:"foreignKey:DRepHashID"`
-	Redeemer *Redeemer    `gorm:"foreignKey:RedeemerID"`
+// GenerateVotingAnchorHash generates a unique hash for a voting anchor
+func GenerateVotingAnchorHash(url string, dataHash []byte) []byte {
+	h := sha256.New()
+	h.Write([]byte(url))
+	h.Write(dataHash)
+	return h.Sum(nil)
 }
 
-// TableName ensures proper table naming to match database reality
+// DelegationVote represents delegation votes with composite primary key
+type DelegationVote struct {
+	TxHash       []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex    uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	AddrHash     []byte `gorm:"type:VARBINARY(28);not null;index"`
+	DRepHash     []byte `gorm:"type:VARBINARY(28);not null;index"`
+	RedeemerHash []byte `gorm:"type:VARBINARY(32);index"`
+
+	// Relationships
+	Tx       Tx           `gorm:"foreignKey:TxHash;references:Hash"`
+	Addr     StakeAddress `gorm:"foreignKey:AddrHash;references:HashRaw"`
+	DRep     DRepHash     `gorm:"foreignKey:DRepHash;references:HashRaw"`
+	Redeemer *Redeemer    `gorm:"foreignKey:RedeemerHash;references:Hash"`
+}
+
 func (DelegationVote) TableName() string {
 	return "delegation_votes"
 }
 
-// CommitteeRegistration represents committee registrations
+// CommitteeRegistration represents committee registrations with composite primary key
 type CommitteeRegistration struct {
-	ID        uint64 `gorm:"primaryKey;autoIncrement"`
-	TxID      uint64 `gorm:"not null"`
-	CertIndex int32  `gorm:"not null"`
-	ColdKeyID uint64 `gorm:"not null"`
-	HotKeyID  uint64 `gorm:"not null"`
+	TxHash      []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex   uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	ColdKeyHash []byte `gorm:"type:VARBINARY(28);not null;index"`
+	HotKeyHash  []byte `gorm:"type:VARBINARY(28);not null;index"`
 
 	// Relationships
-	Tx      Tx            `gorm:"foreignKey:TxID"`
-	ColdKey CommitteeHash `gorm:"foreignKey:ColdKeyID"`
-	HotKey  CommitteeHash `gorm:"foreignKey:HotKeyID"`
+	Tx      Tx            `gorm:"foreignKey:TxHash;references:Hash"`
+	ColdKey CommitteeHash `gorm:"foreignKey:ColdKeyHash;references:HashRaw"`
+	HotKey  CommitteeHash `gorm:"foreignKey:HotKeyHash;references:HashRaw"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (CommitteeRegistration) TableName() string {
 	return "committee_registrations"
 }
 
-// CommitteeDeregistration represents committee deregistrations
+// CommitteeDeregistration represents committee deregistrations with composite primary key
 type CommitteeDeregistration struct {
-	ID           uint64 `gorm:"primaryKey;autoIncrement"`
-	TxID         uint64 `gorm:"not null"`
-	CertIndex    int32  `gorm:"not null"`
-	ColdKeyID    uint64 `gorm:"not null"`
-	AnchorID     *uint64 `gorm:"type:BIGINT"`
+	TxHash      []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex   uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	ColdKeyHash []byte `gorm:"type:VARBINARY(28);not null;index"`
+	AnchorHash  []byte `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
-	Tx       Tx            `gorm:"foreignKey:TxID"`
-	ColdKey  CommitteeHash `gorm:"foreignKey:ColdKeyID"`
-	Anchor   *VotingAnchor `gorm:"foreignKey:AnchorID"`
+	Tx      Tx            `gorm:"foreignKey:TxHash;references:Hash"`
+	ColdKey CommitteeHash `gorm:"foreignKey:ColdKeyHash;references:HashRaw"`
+	Anchor  *VotingAnchor `gorm:"foreignKey:AnchorHash;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (CommitteeDeregistration) TableName() string {
 	return "committee_deregistrations"
 }
 
-// TreasuryWithdrawal represents treasury withdrawals
+// TreasuryWithdrawal represents treasury withdrawals with composite primary key
 type TreasuryWithdrawal struct {
-	ID                  uint64 `gorm:"primaryKey;autoIncrement"`
-	GovActionProposalID uint64 `gorm:"not null"`
-	StakeAddressID      uint64 `gorm:"not null"`
-	Amount              uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
+	GovActionProposalHash []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	StakeAddressHash      []byte `gorm:"type:VARBINARY(28);primaryKey"`
+	Amount                uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
 
 	// Relationships
-	GovActionProposal GovActionProposal `gorm:"foreignKey:GovActionProposalID"`
-	StakeAddress      StakeAddress      `gorm:"foreignKey:StakeAddressID"`
+	GovActionProposal GovActionProposal `gorm:"foreignKey:GovActionProposalHash;references:Hash"`
+	StakeAddress      StakeAddress      `gorm:"foreignKey:StakeAddressHash;references:HashRaw"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (TreasuryWithdrawal) TableName() string {
 	return "treasury_withdrawals"
 }
 
-// CommitteeMember represents committee members
+// CommitteeMember represents committee members with composite primary key
 type CommitteeMember struct {
-	ID               uint64 `gorm:"primaryKey;autoIncrement"`
-	CommitteeHashID  uint64 `gorm:"not null"`
-	FromEpoch        uint32 `gorm:"type:INT UNSIGNED;not null"`
-	UntilEpoch       *uint32 `gorm:"type:INT UNSIGNED"`
+	CommitteeHash []byte  `gorm:"type:VARBINARY(28);primaryKey"`
+	FromEpoch     uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
+	UntilEpoch    *uint32 `gorm:"type:INT UNSIGNED;index"`
 
 	// Relationships
-	CommitteeHash CommitteeHash `gorm:"foreignKey:CommitteeHashID"`
+	Committee CommitteeHash `gorm:"foreignKey:CommitteeHash;references:HashRaw"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (CommitteeMember) TableName() string {
 	return "committee_members"
 }
 
-// EpochState represents epoch state information
+// EpochState represents epoch state information with epoch as primary key
 type EpochState struct {
-	ID             uint64 `gorm:"primaryKey;autoIncrement"`
-	EpochNo        uint32 `gorm:"type:INT UNSIGNED;not null;uniqueIndex"`
-	CommitteeID    *uint64 `gorm:"type:BIGINT"`
-	NoConfidenceID *uint64 `gorm:"type:BIGINT"`
-	ConstitutionID *uint64 `gorm:"type:BIGINT"`
+	EpochNo            uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	CommitteeHash      []byte `gorm:"type:VARBINARY(32);index"`
+	NoConfidenceHash   []byte `gorm:"type:VARBINARY(32);index"`
+	ConstitutionHash   []byte `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
-	Committee     *Committee         `gorm:"foreignKey:CommitteeID"`
-	NoConfidence  *GovActionProposal `gorm:"foreignKey:NoConfidenceID"`
-	Constitution  *Constitution      `gorm:"foreignKey:ConstitutionID"`
+	Committee     *Committee         `gorm:"foreignKey:CommitteeHash;references:Hash"`
+	NoConfidence  *GovActionProposal `gorm:"foreignKey:NoConfidenceHash;references:Hash"`
+	Constitution  *Constitution      `gorm:"foreignKey:ConstitutionHash;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (EpochState) TableName() string {
 	return "epoch_states"
 }
 
-// DRepDistr represents DRep distribution
+// DRepDistr represents DRep distribution with composite primary key
 type DRepDistr struct {
-	ID     uint64 `gorm:"primaryKey;autoIncrement"`
-	HashID uint64 `gorm:"not null"`
-	Amount uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
-	EpochNo uint32 `gorm:"type:INT UNSIGNED;not null"`
+	HashRaw []byte `gorm:"type:VARBINARY(28);primaryKey"`
+	EpochNo uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	Amount  uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
 
 	// Relationships
-	Hash DRepHash `gorm:"foreignKey:HashID"`
+	Hash DRepHash `gorm:"foreignKey:HashRaw;references:HashRaw"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (DRepDistr) TableName() string {
 	return "d_rep_distrs"
 }
 
-// Committee represents committee information
+// Committee represents committee information with hash as primary key
 type Committee struct {
-	ID      uint64 `gorm:"primaryKey;autoIncrement"`
-	GovActionProposalID uint64 `gorm:"not null"`
-	Quorum  float64 `gorm:"not null"`
+	Hash                  []byte  `gorm:"type:VARBINARY(32);primaryKey"` // Hash of proposal hash + quorum
+	GovActionProposalHash []byte  `gorm:"type:VARBINARY(32);not null;index"`
+	Quorum                float64 `gorm:"not null"`
 
 	// Relationships
-	GovActionProposal GovActionProposal `gorm:"foreignKey:GovActionProposalID"`
-	EpochStates       []EpochState      `gorm:"foreignKey:CommitteeID"`
+	GovActionProposal GovActionProposal `gorm:"foreignKey:GovActionProposalHash;references:Hash"`
+	EpochStates       []EpochState      `gorm:"foreignKey:CommitteeHash;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (Committee) TableName() string {
 	return "committees"
 }
 
-// Constitution represents constitution information
-type Constitution struct {
-	ID               uint64 `gorm:"primaryKey;autoIncrement"`
-	GovActionProposalID uint64 `gorm:"not null"`
-	VotingAnchorID   *uint64 `gorm:"type:BIGINT"`
-	ScriptHash       []byte  `gorm:"type:VARBINARY(28)"`
-
-	// Relationships
-	GovActionProposal GovActionProposal `gorm:"foreignKey:GovActionProposalID"`
-	VotingAnchor      *VotingAnchor     `gorm:"foreignKey:VotingAnchorID"`
-	EpochStates       []EpochState      `gorm:"foreignKey:ConstitutionID"`
+// GenerateCommitteeHash generates a unique hash for a committee
+func GenerateCommitteeHash(govActionProposalHash []byte, quorum float64) []byte {
+	h := sha256.New()
+	h.Write(govActionProposalHash)
+	quorumBytes := make([]byte, 8)
+	// Convert float64 to bytes
+	*(*float64)(unsafe.Pointer(&quorumBytes[0])) = quorum
+	h.Write(quorumBytes)
+	return h.Sum(nil)
 }
 
-// TableName ensures proper table naming to match database reality
+// Constitution represents constitution information with hash as primary key
+type Constitution struct {
+	Hash                  []byte `gorm:"type:VARBINARY(32);primaryKey"` // Hash of proposal + anchor + script
+	GovActionProposalHash []byte `gorm:"type:VARBINARY(32);not null;index"`
+	VotingAnchorHash      []byte `gorm:"type:VARBINARY(32);index"`
+	ScriptHash            []byte `gorm:"type:VARBINARY(28);index"`
+
+	// Relationships
+	GovActionProposal GovActionProposal `gorm:"foreignKey:GovActionProposalHash;references:Hash"`
+	VotingAnchor      *VotingAnchor     `gorm:"foreignKey:VotingAnchorHash;references:Hash"`
+	EpochStates       []EpochState      `gorm:"foreignKey:ConstitutionHash;references:Hash"`
+}
+
 func (Constitution) TableName() string {
 	return "constitutions"
 }
 
-// Treasury represents treasury information
-type Treasury struct {
-	ID              uint64 `gorm:"primaryKey;autoIncrement"`
-	TxID            uint64 `gorm:"not null"`
-	CertIndex       int32  `gorm:"not null"`
-	Amount          uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
-	StakeAddressID  uint64 `gorm:"not null"`
-
-	// Relationships
-	Tx           Tx           `gorm:"foreignKey:TxID"`
-	StakeAddress StakeAddress `gorm:"foreignKey:StakeAddressID"`
+// GenerateConstitutionHash generates a unique hash for a constitution
+func GenerateConstitutionHash(govActionProposalHash []byte, votingAnchorHash []byte, scriptHash []byte) []byte {
+	h := sha256.New()
+	h.Write(govActionProposalHash)
+	if votingAnchorHash != nil {
+		h.Write(votingAnchorHash)
+	}
+	if scriptHash != nil {
+		h.Write(scriptHash)
+	}
+	return h.Sum(nil)
 }
 
-// TableName ensures proper table naming to match database reality
+// Treasury represents treasury information with composite primary key
+type Treasury struct {
+	TxHash           []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex        uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	Amount           uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
+	StakeAddressHash []byte `gorm:"type:VARBINARY(28);not null;index"`
+
+	// Relationships
+	Tx           Tx           `gorm:"foreignKey:TxHash;references:Hash"`
+	StakeAddress StakeAddress `gorm:"foreignKey:StakeAddressHash;references:HashRaw"`
+}
+
 func (Treasury) TableName() string {
 	return "treasuries"
 }
 
-// Reserve represents reserve information
+// Reserve represents reserve information with composite primary key
 type Reserve struct {
-	ID              uint64 `gorm:"primaryKey;autoIncrement"`
-	TxID            uint64 `gorm:"not null"`
-	CertIndex       int32  `gorm:"not null"`
-	Amount          uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
-	StakeAddressID  uint64 `gorm:"not null"`
+	TxHash           []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex        uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	Amount           uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
+	StakeAddressHash []byte `gorm:"type:VARBINARY(28);not null;index"`
 
 	// Relationships
-	Tx           Tx           `gorm:"foreignKey:TxID"`
-	StakeAddress StakeAddress `gorm:"foreignKey:StakeAddressID"`
+	Tx           Tx           `gorm:"foreignKey:TxHash;references:Hash"`
+	StakeAddress StakeAddress `gorm:"foreignKey:StakeAddressHash;references:HashRaw"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (Reserve) TableName() string {
 	return "reserves"
 }
 
-// PotTransfer represents pot transfers
+// PotTransfer represents pot transfers with composite primary key
 type PotTransfer struct {
-	ID        uint64 `gorm:"primaryKey;autoIncrement"`
-	TxID      uint64 `gorm:"not null"`
-	CertIndex int32  `gorm:"not null"`
+	TxHash    []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
 	Amount    uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
 
 	// Relationships
-	Tx Tx `gorm:"foreignKey:TxID"`
+	Tx Tx `gorm:"foreignKey:TxHash;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (PotTransfer) TableName() string {
 	return "pot_transfers"
 }
 
-// DrepInfo represents Delegated Representative information
+// DrepInfo represents Delegated Representative information with hash as primary key
 type DrepInfo struct {
-	ID              uint64  `gorm:"primaryKey;autoIncrement"`
-	View            string  `gorm:"type:VARCHAR(255);not null;uniqueIndex"`
-	Hash            []byte  `gorm:"type:VARBINARY(32);not null"`
-	HasScript       bool    `gorm:"not null"`
-	RegisteredTxID  *uint64 `gorm:"type:BIGINT"`
-	DeregisteredTxID *uint64 `gorm:"type:BIGINT"`
-	VotingAnchorID  *uint64 `gorm:"type:BIGINT"`
-	Deposit         *uint64 `gorm:"type:BIGINT UNSIGNED"`
+	Hash                   []byte  `gorm:"type:VARBINARY(32);primaryKey"`
+	View                   string  `gorm:"type:VARCHAR(255);not null;uniqueIndex"`
+	HasScript              bool    `gorm:"not null"`
+	RegisteredTxHash       []byte  `gorm:"type:VARBINARY(32);index"`
+	DeregisteredTxHash     []byte  `gorm:"type:VARBINARY(32);index"`
+	VotingAnchorHash       []byte  `gorm:"type:VARBINARY(32);index"`
+	Deposit                *uint64 `gorm:"type:BIGINT UNSIGNED"`
 
 	// Relationships
-	RegisteredTx    *Tx          `gorm:"foreignKey:RegisteredTxID"`
-	DeregisteredTx  *Tx          `gorm:"foreignKey:DeregisteredTxID"`
-	VotingAnchor    *VotingAnchor `gorm:"foreignKey:VotingAnchorID"`
-	DelegationVotes []DelegationVote `gorm:"foreignKey:DrepHashID"`
-	VotingProcedures []VotingProcedure `gorm:"foreignKey:DrepVoter"`
+	RegisteredTx     *Tx               `gorm:"foreignKey:RegisteredTxHash;references:Hash"`
+	DeregisteredTx   *Tx               `gorm:"foreignKey:DeregisteredTxHash;references:Hash"`
+	VotingAnchor     *VotingAnchor     `gorm:"foreignKey:VotingAnchorHash;references:Hash"`
+	DelegationVotes  []DelegationVote  `gorm:"foreignKey:DRepHash;references:Hash"`
+	VotingProcedures []VotingProcedure `gorm:"foreignKey:DRepVoter;references:Hash"`
 }
 
-// TableName ensures proper table naming to match database reality
 func (DrepInfo) TableName() string {
 	return "drep_infos"
 }
 
+// Remove all BeforeCreate hooks since we don't need ID management
+func (v *VotingProcedure) BeforeCreate(tx *gorm.DB) error { return nil }
+func (g *GovActionProposal) BeforeCreate(tx *gorm.DB) error { return nil }
+func (p *ParamProposal) BeforeCreate(tx *gorm.DB) error { return nil }
+func (d *DRepHash) BeforeCreate(tx *gorm.DB) error { return nil }
+func (c *CommitteeHash) BeforeCreate(tx *gorm.DB) error { return nil }
+func (v *VotingAnchor) BeforeCreate(tx *gorm.DB) error { return nil }
+func (d *DelegationVote) BeforeCreate(tx *gorm.DB) error { return nil }
+func (c *CommitteeRegistration) BeforeCreate(tx *gorm.DB) error { return nil }
+func (c *CommitteeDeregistration) BeforeCreate(tx *gorm.DB) error { return nil }
+func (t *TreasuryWithdrawal) BeforeCreate(tx *gorm.DB) error { return nil }
+func (c *CommitteeMember) BeforeCreate(tx *gorm.DB) error { return nil }
+func (e *EpochState) BeforeCreate(tx *gorm.DB) error { return nil }
+func (d *DRepDistr) BeforeCreate(tx *gorm.DB) error { return nil }
+func (c *Committee) BeforeCreate(tx *gorm.DB) error { return nil }
+func (c *Constitution) BeforeCreate(tx *gorm.DB) error { return nil }
+func (t *Treasury) BeforeCreate(tx *gorm.DB) error { return nil }
+func (r *Reserve) BeforeCreate(tx *gorm.DB) error { return nil }
+func (p *PotTransfer) BeforeCreate(tx *gorm.DB) error { return nil }
+func (d *DrepInfo) BeforeCreate(tx *gorm.DB) error { return nil }

@@ -297,11 +297,13 @@ func (s *Service) queryStakeDistribution(epochNo uint32) error {
 		
 		// For now, create a single epoch_stake entry per pool
 		// In reality, we'd need individual delegator amounts
+		// Use a placeholder stake address for now
+		placeholderAddr := []byte("placeholder_delegator_addr")
 		epochStake := &models.EpochStake{
-			PoolID:  poolHash.ID,
-			Amount:  stakeAmount,
-			EpochNo: epochNo,
-			AddrID:  1, // Placeholder - need actual delegator addresses
+			PoolHash: poolHash.HashRaw,
+			Amount:   int64(stakeAmount),
+			EpochNo:  epochNo,
+			AddrHash: placeholderAddr, // Placeholder - need actual delegator addresses
 		}
 		
 		if err := tx.Create(epochStake).Error; err != nil {
@@ -444,7 +446,7 @@ func (s *Service) ProcessRefunds(epochNo uint32) error {
 }
 
 // Helper method to process MIR certificates for treasury/reserve
-func (s *Service) ProcessMIRCertificate(tx *gorm.DB, mir *common.MoveInstantaneousRewardsCertificate, txID uint64, certIndex int) error {
+func (s *Service) ProcessMIRCertificate(tx *gorm.DB, mir *common.MoveInstantaneousRewardsCertificate, txHash []byte, certIndex uint32) error {
 	// This would be called from certificate processor when MIR certs are found
 	
 	pot := "reserves"
@@ -455,13 +457,16 @@ func (s *Service) ProcessMIRCertificate(tx *gorm.DB, mir *common.MoveInstantaneo
 	// Check if this is a pot-to-pot transfer
 	if mir.Reward.OtherPot > 0 {
 		// This affects treasury/reserve balances
+		// Use a system stake address placeholder
+		systemAddr := []byte("system_treasury_reserve")
+		
 		if pot == "treasury" {
 			// Transfer from treasury
 			treasury := &models.Treasury{
-				TxID:           txID,
-				CertIndex:      int32(certIndex),
-				Amount:         mir.Reward.OtherPot,
-				StakeAddressID: 1, // System address placeholder
+				TxHash:           txHash,
+				CertIndex:        certIndex,
+				Amount:           mir.Reward.OtherPot,
+				StakeAddressHash: systemAddr,
 			}
 			if err := tx.Create(treasury).Error; err != nil {
 				return err
@@ -469,10 +474,10 @@ func (s *Service) ProcessMIRCertificate(tx *gorm.DB, mir *common.MoveInstantaneo
 		} else {
 			// Transfer from reserves
 			reserve := &models.Reserve{
-				TxID:           txID,
-				CertIndex:      int32(certIndex),
-				Amount:         mir.Reward.OtherPot,
-				StakeAddressID: 1, // System address placeholder
+				TxHash:           txHash,
+				CertIndex:        certIndex,
+				Amount:           mir.Reward.OtherPot,
+				StakeAddressHash: systemAddr,
 			}
 			if err := tx.Create(reserve).Error; err != nil {
 				return err

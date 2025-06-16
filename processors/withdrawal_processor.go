@@ -27,17 +27,17 @@ func NewWithdrawalProcessor(db *gorm.DB) *WithdrawalProcessor {
 }
 
 // ProcessWithdrawals processes withdrawals from a transaction
-func (wp *WithdrawalProcessor) ProcessWithdrawals(ctx context.Context, tx *gorm.DB, txID uint64, withdrawals map[string]uint64, blockType uint) error {
+func (wp *WithdrawalProcessor) ProcessWithdrawals(ctx context.Context, tx *gorm.DB, txHash []byte, withdrawals map[string]uint64, blockType uint) error {
 	if len(withdrawals) == 0 {
 		return nil
 	}
 
 	if GlobalLoggingConfig.LogStakeOperations.Load() {
-		log.Printf("Processing %d withdrawals for transaction %d", len(withdrawals), txID)
+		log.Printf("Processing %d withdrawals for transaction %x", len(withdrawals), txHash)
 	}
 
 	for rewardAccount, amount := range withdrawals {
-		if err := wp.processWithdrawal(tx, txID, rewardAccount, amount); err != nil {
+		if err := wp.processWithdrawal(tx, txHash, rewardAccount, amount); err != nil {
 			log.Printf("[WARNING] Withdrawal processing error: %v", err)
 			continue
 		}
@@ -47,7 +47,7 @@ func (wp *WithdrawalProcessor) ProcessWithdrawals(ctx context.Context, tx *gorm.
 }
 
 // processWithdrawal processes a single withdrawal
-func (wp *WithdrawalProcessor) processWithdrawal(tx *gorm.DB, txID uint64, rewardAccountStr string, amount uint64) error {
+func (wp *WithdrawalProcessor) processWithdrawal(tx *gorm.DB, txHash []byte, rewardAccountStr string, amount uint64) error {
 	// Parse the reward account address
 	rewardAddr, err := common.NewAddress(rewardAccountStr)
 	if err != nil {
@@ -63,44 +63,44 @@ func (wp *WithdrawalProcessor) processWithdrawal(tx *gorm.DB, txID uint64, rewar
 	}
 
 	// Get or create the stake address (using atomic FirstOrCreate with transaction context)
-	stakeAddrID, err := wp.stakeAddressCache.GetOrCreateStakeAddressFromBytesWithTx(tx, stakeKeyHash[:])
+	stakeAddrHash, err := wp.stakeAddressCache.GetOrCreateStakeAddressFromBytesWithTx(tx, stakeKeyHash[:])
 	if err != nil {
 		return fmt.Errorf("failed to get stake address: %w", err)
 	}
 
 	// Simple validation
-	if stakeAddrID == 0 {
-		return fmt.Errorf("invalid stake address ID: got 0")
+	if len(stakeAddrHash) != 28 {
+		return fmt.Errorf("invalid stake address hash length: got %d", len(stakeAddrHash))
 	}
 
 	// DEBUG: Verify stake address actually exists in database
 	var existsCheck models.StakeAddress
-	if err := tx.Where("id = ?", stakeAddrID).First(&existsCheck).Error; err != nil {
-		log.Printf("[WARNING] STAKE ADDRESS VERIFICATION FAILED: ID %d does not exist in database (reward account: %s)", stakeAddrID, rewardAccountStr)
+	if err := tx.Where("hash_raw = ?", stakeAddrHash).First(&existsCheck).Error; err != nil {
+		log.Printf("[WARNING] STAKE ADDRESS VERIFICATION FAILED: hash %x does not exist in database (reward account: %s)", stakeAddrHash, rewardAccountStr)
 		log.Printf("[WARNING] Attempting to re-create stake address from hash: %x", stakeKeyHash[:])
 		
 		// Try to get/create again with the transaction context
-		newStakeAddrID, createErr := wp.stakeAddressCache.GetOrCreateStakeAddressFromBytesWithTx(tx, stakeKeyHash[:])
+		newStakeAddrHash, createErr := wp.stakeAddressCache.GetOrCreateStakeAddressFromBytesWithTx(tx, stakeKeyHash[:])
 		if createErr != nil {
 			return fmt.Errorf("failed to re-create stake address: %w", createErr)
 		}
-		log.Printf("[OK] Re-created stake address with ID: %d", newStakeAddrID)
-		stakeAddrID = newStakeAddrID
+		log.Printf("[OK] Re-created stake address with hash: %x", newStakeAddrHash)
+		stakeAddrHash = newStakeAddrHash
 	} else {
 		if GlobalLoggingConfig.LogStakeOperations.Load() {
-			log.Printf("[OK] Verified stake address ID %d exists for withdrawal (reward account: %s)", stakeAddrID, rewardAccountStr[:16]+"...")
+			log.Printf("[OK] Verified stake address hash %x exists for withdrawal (reward account: %s)", stakeAddrHash, rewardAccountStr[:16]+"...")
 		}
 	}
 
 	// Create withdrawal record
 	withdrawal := &models.Withdrawal{
-		TxID:   txID,
-		AddrID: stakeAddrID,
-		Amount: amount,
+		TxHash:   txHash,
+		AddrHash: stakeAddrHash,
+		Amount:   int64(amount),
 	}
 
 	if err := tx.Create(withdrawal).Error; err != nil {
-		log.Printf("[WARNING] WITHDRAWAL CREATION FAILED: tx_id=%d, addr_id=%d, amount=%d, error=%v", txID, stakeAddrID, amount, err)
+		log.Printf("[WARNING] WITHDRAWAL CREATION FAILED: tx_hash=%x, addr_hash=%x, amount=%d, error=%v", txHash, stakeAddrHash, amount, err)
 		return fmt.Errorf("failed to create withdrawal record: %w", err)
 	}
 
@@ -111,7 +111,7 @@ func (wp *WithdrawalProcessor) processWithdrawal(tx *gorm.DB, txID uint64, rewar
 }
 
 // ProcessWithdrawalsFromTransaction extracts and processes withdrawals from a transaction
-func (wp *WithdrawalProcessor) ProcessWithdrawalsFromTransaction(ctx context.Context, tx *gorm.DB, txID uint64, transaction interface{}, blockType uint) error {
+func (wp *WithdrawalProcessor) ProcessWithdrawalsFromTransaction(ctx context.Context, tx *gorm.DB, txHash []byte, transaction interface{}, blockType uint) error {
 	// Only process withdrawals for Shelley+ eras
 	if blockType < 2 {
 		return nil
@@ -128,7 +128,7 @@ func (wp *WithdrawalProcessor) ProcessWithdrawalsFromTransaction(ctx context.Con
 				withdrawals[addr.String()] = amount
 			}
 		}
-		return wp.ProcessWithdrawals(ctx, tx, txID, withdrawals, blockType)
+		return wp.ProcessWithdrawals(ctx, tx, txHash, withdrawals, blockType)
 	default:
 		// Transaction doesn't support withdrawals or has none
 		return nil
@@ -157,10 +157,10 @@ func (wp *WithdrawalProcessor) BatchProcessWithdrawals(ctx context.Context, tx *
 
 	// Process withdrawals
 	for _, item := range withdrawalBatch {
-		if err := wp.processWithdrawal(tx, item.TxID, item.RewardAccount, item.Amount); err != nil {
+		if err := wp.processWithdrawal(tx, item.TxHash, item.RewardAccount, item.Amount); err != nil {
 			wp.errorCollector.ProcessingWarning("WithdrawalProcessor", "batchProcessWithdrawal",
 				fmt.Sprintf("failed to process withdrawal: %v", err),
-				fmt.Sprintf("tx_id:%d,reward_account:%s", item.TxID, item.RewardAccount))
+				fmt.Sprintf("tx_hash:%x,reward_account:%s", item.TxHash, item.RewardAccount))
 			continue
 		}
 	}
@@ -170,7 +170,7 @@ func (wp *WithdrawalProcessor) BatchProcessWithdrawals(ctx context.Context, tx *
 
 // WithdrawalBatch represents a batch of withdrawals to process
 type WithdrawalBatch struct {
-	TxID          uint64
+	TxHash        []byte
 	RewardAccount string
 	Amount        uint64
 }
@@ -205,7 +205,7 @@ func (wp *WithdrawalProcessor) GetWithdrawalStats(tx *gorm.DB) (*WithdrawalStats
 
 	// Unique addresses
 	if err := tx.Model(&models.Withdrawal{}).
-		Select("COUNT(DISTINCT addr_id)").
+		Select("COUNT(DISTINCT addr_hash)").
 		Scan(&stats.UniqueAddresses).Error; err != nil {
 		return nil, fmt.Errorf("failed to count unique addresses: %w", err)
 	}
@@ -274,9 +274,10 @@ func (wp *WithdrawalProcessor) ProcessBulkWithdrawals(ctx context.Context, tx *g
 	}
 
 	// Group by transaction for logging
-	txGroups := make(map[uint64][]WithdrawalItem)
+	txGroups := make(map[string][]WithdrawalItem)
 	for _, item := range items {
-		txGroups[item.TxID] = append(txGroups[item.TxID], item)
+		hashKey := fmt.Sprintf("%x", item.TxHash)
+		txGroups[hashKey] = append(txGroups[hashKey], item)
 	}
 
 	log.Printf("Processing withdrawals for %d transactions", len(txGroups))
@@ -287,7 +288,7 @@ func (wp *WithdrawalProcessor) ProcessBulkWithdrawals(ctx context.Context, tx *g
 		if err != nil {
 			wp.errorCollector.ProcessingWarning("WithdrawalProcessor", "processWithdrawal",
 				fmt.Sprintf("failed to parse reward account: %v", err),
-				fmt.Sprintf("tx_id:%d,reward_account:%s", item.TxID, item.RewardAccount))
+				fmt.Sprintf("tx_hash:%x,reward_account:%s", item.TxHash, item.RewardAccount))
 			continue
 		}
 
@@ -296,28 +297,28 @@ func (wp *WithdrawalProcessor) ProcessBulkWithdrawals(ctx context.Context, tx *g
 		if stakeKeyHash == emptyHash {
 			wp.errorCollector.ProcessingWarning("WithdrawalProcessor", "processWithdrawal",
 				"reward address does not contain stake key hash",
-				fmt.Sprintf("tx_id:%d,reward_account:%s", item.TxID, item.RewardAccount))
+				fmt.Sprintf("tx_hash:%x,reward_account:%s", item.TxHash, item.RewardAccount))
 			continue
 		}
 
-		stakeAddrID, err := wp.stakeAddressCache.GetOrCreateStakeAddressFromBytesWithTx(tx, stakeKeyHash[:])
+		stakeAddrHash, err := wp.stakeAddressCache.GetOrCreateStakeAddressFromBytesWithTx(tx, stakeKeyHash[:])
 		if err != nil {
 			wp.errorCollector.ProcessingWarning("WithdrawalProcessor", "processWithdrawal",
 				fmt.Sprintf("failed to get stake address: %v", err),
-				fmt.Sprintf("tx_id:%d,reward_account:%s", item.TxID, item.RewardAccount))
+				fmt.Sprintf("tx_hash:%x,reward_account:%s", item.TxHash, item.RewardAccount))
 			continue
 		}
 
 		withdrawal := &models.Withdrawal{
-			TxID:   item.TxID,
-			AddrID: stakeAddrID,
-			Amount: item.Amount,
+			TxHash:   item.TxHash,
+			AddrHash: stakeAddrHash,
+			Amount:   int64(item.Amount),
 		}
 
 		if err := tx.Create(withdrawal).Error; err != nil {
 			wp.errorCollector.ProcessingWarning("WithdrawalProcessor", "processWithdrawal",
 				fmt.Sprintf("failed to create withdrawal record: %v", err),
-				fmt.Sprintf("tx_id:%d,reward_account:%s", item.TxID, item.RewardAccount))
+				fmt.Sprintf("tx_hash:%x,reward_account:%s", item.TxHash, item.RewardAccount))
 			continue
 		}
 	}
@@ -327,7 +328,7 @@ func (wp *WithdrawalProcessor) ProcessBulkWithdrawals(ctx context.Context, tx *g
 
 // WithdrawalItem represents a withdrawal to be processed
 type WithdrawalItem struct {
-	TxID          uint64
+	TxHash        []byte
 	RewardAccount string
 	Amount        uint64
 }

@@ -27,7 +27,7 @@ func NewMetadataProcessor(db *gorm.DB) *MetadataProcessor {
 }
 
 // ProcessTransactionMetadata processes metadata from a transaction
-func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx *gorm.DB, txID uint64, transaction interface{}, blockType uint) error {
+func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx *gorm.DB, txHash []byte, transaction interface{}, blockType uint) error {
 	// All eras can have metadata - Byron stores it in Attributes field
 	// Shelley+ stores it in TxMetadata field
 	// Both return *cbor.LazyValue from Metadata() method
@@ -48,7 +48,7 @@ func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx 
 			if err != nil {
 				mp.errorCollector.ProcessingWarning("MetadataProcessor", "ProcessTransactionMetadata",
 					fmt.Sprintf("failed to decode metadata: %v", err),
-					fmt.Sprintf("tx_id:%d", txID))
+					fmt.Sprintf("tx_hash:%x", txHash))
 				return nil
 			}
 			decodedValue = decoded
@@ -102,13 +102,13 @@ func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx 
 			return nil
 		}
 
-		log.Printf("Processing %d metadata entries for transaction %d (era %d)", len(metadata), txID, blockType)
+		log.Printf("Processing %d metadata entries for transaction %x (era %d)", len(metadata), txHash, blockType)
 
 		for key, value := range metadata {
-			if err := mp.processMetadataEntry(tx, txID, key, value); err != nil {
+			if err := mp.processMetadataEntry(tx, txHash, key, value); err != nil {
 				mp.errorCollector.ProcessingWarning("MetadataProcessor", "processMetadataEntry",
 					fmt.Sprintf("failed to process metadata entry %d: %v", key, err),
-					fmt.Sprintf("tx_id:%d, key:%d", txID, key))
+					fmt.Sprintf("tx_hash:%x, key:%d", txHash, key))
 			}
 		}
 
@@ -123,7 +123,7 @@ func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx 
 		// This should never happen as all transaction types implement Metadata() *cbor.LazyValue
 		mp.errorCollector.ProcessingWarning("MetadataProcessor", "ProcessTransactionMetadata",
 			"transaction does not implement Metadata() method",
-			fmt.Sprintf("tx_id:%d, type:%T", txID, transaction))
+			fmt.Sprintf("tx_hash:%x, type:%T", txHash, transaction))
 		return nil
 	}
 }
@@ -132,7 +132,7 @@ func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx 
 
 
 // processMetadataEntry processes a single metadata entry
-func (mp *MetadataProcessor) processMetadataEntry(tx *gorm.DB, txID uint64, key uint64, value interface{}) error {
+func (mp *MetadataProcessor) processMetadataEntry(tx *gorm.DB, txHash []byte, key uint64, value interface{}) error {
 	// Convert value to JSON if possible
 	var jsonStr *string
 	var rawBytes []byte
@@ -157,18 +157,22 @@ func (mp *MetadataProcessor) processMetadataEntry(tx *gorm.DB, txID uint64, key 
 	}
 
 	// Create metadata record
+	var jsonBytes []byte
+	if jsonStr != nil {
+		jsonBytes = []byte(*jsonStr)
+	}
 	metadata := &models.TxMetadata{
-		TxID:  txID,
-		Key:   key,
-		Json:  jsonStr,
-		Bytes: rawBytes,
+		TxHash: txHash,
+		Key:    key,
+		Json:   jsonBytes,
+		Bytes:  rawBytes,
 	}
 
 	if err := tx.Create(metadata).Error; err != nil {
 		return fmt.Errorf("failed to create metadata record: %w", err)
 	}
 
-	log.Printf("[OK] Processed metadata entry: tx_id=%d, key=%d", txID, key)
+	log.Printf("[OK] Processed metadata entry: tx_hash=%x, key=%d", txHash, key)
 	return nil
 }
 
@@ -176,7 +180,7 @@ func (mp *MetadataProcessor) processMetadataEntry(tx *gorm.DB, txID uint64, key 
 
 
 // processScript processes a single script
-func (mp *MetadataProcessor) processScript(tx *gorm.DB, txID uint64, script interface{}, scriptType string) error {
+func (mp *MetadataProcessor) processScript(tx *gorm.DB, txHash []byte, script interface{}, scriptType string) error {
 	// Extract script hash and bytes
 	var scriptHash []byte
 	var scriptBytes []byte
@@ -265,7 +269,7 @@ func (mp *MetadataProcessor) getEraName(blockType uint) string {
 }
 
 // ProcessMetadataFromCBOR processes metadata from raw CBOR bytes
-func (mp *MetadataProcessor) ProcessMetadataFromCBOR(ctx context.Context, tx *gorm.DB, txID uint64, cborBytes []byte) error {
+func (mp *MetadataProcessor) ProcessMetadataFromCBOR(ctx context.Context, tx *gorm.DB, txHash []byte, cborBytes []byte) error {
 	// This would decode CBOR and process metadata
 	// Implementation depends on CBOR library usage
 	return nil
@@ -280,10 +284,10 @@ func (mp *MetadataProcessor) BatchProcessMetadata(ctx context.Context, tx *gorm.
 	log.Printf("Batch processing %d metadata entries", len(metadataBatch))
 
 	for _, item := range metadataBatch {
-		if err := mp.processMetadataEntry(tx, item.TxID, item.Key, item.Value); err != nil {
+		if err := mp.processMetadataEntry(tx, item.TxHash, item.Key, item.Value); err != nil {
 			mp.errorCollector.ProcessingWarning("MetadataProcessor", "batchProcessMetadata",
 				fmt.Sprintf("failed to process metadata: %v", err),
-				fmt.Sprintf("tx_id:%d,key:%d", item.TxID, item.Key))
+				fmt.Sprintf("tx_hash:%x,key:%d", item.TxHash, item.Key))
 			continue
 		}
 	}
@@ -293,9 +297,9 @@ func (mp *MetadataProcessor) BatchProcessMetadata(ctx context.Context, tx *gorm.
 
 // MetadataBatch represents a batch of metadata to process
 type MetadataBatch struct {
-	TxID  uint64
-	Key   uint64
-	Value interface{}
+	TxHash []byte
+	Key    uint64
+	Value  interface{}
 }
 
 // GetMetadataStats returns statistics about metadata
@@ -344,4 +348,85 @@ type MetadataStats struct {
 	TotalEntries int64
 	UniqueTxs    int64
 	CommonKeys   map[uint64]int64
+}
+
+// ProcessMetadata processes metadata from a transaction
+func (mp *MetadataProcessor) ProcessMetadata(tx *gorm.DB, txHash []byte, metadata *cbor.LazyValue) error {
+	if metadata == nil {
+		return nil
+	}
+	
+	// Decode the CBOR lazy value to get the actual metadata
+	decodedValue := metadata.Value()
+	if decodedValue == nil {
+		// Try to decode if Value() returns nil
+		decoded, err := metadata.Decode()
+		if err != nil {
+			mp.errorCollector.ProcessingWarning("MetadataProcessor", "ProcessMetadata",
+				fmt.Sprintf("failed to decode metadata: %v", err),
+				fmt.Sprintf("tx_hash:%x", txHash))
+			return nil
+		}
+		decodedValue = decoded
+	}
+	
+	// Handle different metadata formats
+	var metadataMap map[uint64]interface{}
+	
+	switch v := decodedValue.(type) {
+	case map[uint64]interface{}:
+		// Standard format for Shelley+ eras
+		metadataMap = v
+		
+	case map[interface{}]interface{}:
+		// Alternative format - convert keys to uint64
+		metadataMap = make(map[uint64]interface{})
+		for k, val := range v {
+			switch key := k.(type) {
+			case uint64:
+				metadataMap[key] = val
+			case int64:
+				metadataMap[uint64(key)] = val
+			case int:
+				metadataMap[uint64(key)] = val
+			case float64:
+				metadataMap[uint64(key)] = val
+			default:
+				// For non-numeric keys, use hash of string representation
+				keyStr := fmt.Sprintf("%v", key)
+				// Use a simple hash for non-numeric keys
+				var hash uint64
+				for _, c := range keyStr {
+					hash = hash*31 + uint64(c)
+				}
+				metadataMap[hash] = val
+			}
+		}
+		
+	case []interface{}:
+		// Byron might store metadata as array - wrap in map
+		metadataMap = map[uint64]interface{}{0: v}
+		
+	default:
+		// Any other format - wrap in map with key 0
+		if decodedValue != nil {
+			metadataMap = map[uint64]interface{}{0: decodedValue}
+		}
+	}
+	
+	if len(metadataMap) == 0 {
+		return nil
+	}
+	
+	log.Printf("Processing %d metadata entries for transaction %x", len(metadataMap), txHash)
+	
+	for key, value := range metadataMap {
+		if err := mp.processMetadataEntry(tx, txHash, key, value); err != nil {
+			mp.errorCollector.ProcessingWarning("MetadataProcessor", "processMetadataEntry",
+				fmt.Sprintf("failed to process metadata entry %d: %v", key, err),
+				fmt.Sprintf("tx_hash:%x, key:%d", txHash, key))
+		}
+	}
+	
+	return nil
 }

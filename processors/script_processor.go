@@ -24,7 +24,7 @@ type ScriptProcessor struct {
 
 // ScriptCache manages script lookups
 type ScriptCache struct {
-	cache map[string]uint64
+	cache map[string]bool // Just track existence
 	mutex sync.RWMutex
 	db    *gorm.DB
 }
@@ -32,20 +32,20 @@ type ScriptCache struct {
 // NewScriptCache creates a new script cache
 func NewScriptCache(db *gorm.DB) *ScriptCache {
 	return &ScriptCache{
-		cache: make(map[string]uint64),
+		cache: make(map[string]bool),
 		db:    db,
 	}
 }
 
-// GetOrCreateScript retrieves or creates a script ID
-func (sc *ScriptCache) GetOrCreateScript(tx *gorm.DB, txID uint64, scriptHash []byte, scriptType string, scriptBytes []byte, scriptJson *string) (uint64, error) {
+// EnsureScript ensures a script exists
+func (sc *ScriptCache) EnsureScript(tx *gorm.DB, txHash []byte, scriptHash []byte, scriptType string, scriptBytes []byte, scriptJson *string) error {
 	hashHex := hex.EncodeToString(scriptHash)
 	
 	// Check cache first
 	sc.mutex.RLock()
-	if id, exists := sc.cache[hashHex]; exists {
+	if exists := sc.cache[hashHex]; exists {
 		sc.mutex.RUnlock()
-		return id, nil
+		return nil
 	}
 	sc.mutex.RUnlock()
 
@@ -55,39 +55,39 @@ func (sc *ScriptCache) GetOrCreateScript(tx *gorm.DB, txID uint64, scriptHash []
 	if result.Error == nil {
 		// Found in database, cache it
 		sc.mutex.Lock()
-		sc.cache[hashHex] = script.ID
+		sc.cache[hashHex] = true
 		sc.mutex.Unlock()
-		return script.ID, nil
+		return nil
 	}
 
 	if result.Error != gorm.ErrRecordNotFound {
-		return 0, fmt.Errorf("database error: %w", result.Error)
+		return fmt.Errorf("database error: %w", result.Error)
 	}
 
 	// Create new script
 	script = models.Script{
-		TxID:  txID,
-		Hash:  scriptHash,
-		Type:  scriptType,
-		Bytes: scriptBytes,
-		Json:  scriptJson,
+		TxHash: txHash,
+		Hash:   scriptHash,
+		Type:   scriptType,
+		Bytes:  scriptBytes,
+		Json:   scriptJson,
 	}
 
 	if err := tx.Create(&script).Error; err != nil {
-		return 0, fmt.Errorf("failed to create script: %w", err)
+		return fmt.Errorf("failed to create script: %w", err)
 	}
 
-	// Cache the new ID
+	// Cache existence
 	sc.mutex.Lock()
-	sc.cache[hashHex] = script.ID
+	sc.cache[hashHex] = true
 	sc.mutex.Unlock()
 
-	return script.ID, nil
+	return nil
 }
 
 // DatumCache manages datum lookups
 type DatumCache struct {
-	cache map[string]uint64
+	cache map[string]bool // Just track existence
 	mutex sync.RWMutex
 	db    *gorm.DB
 }
@@ -95,20 +95,20 @@ type DatumCache struct {
 // NewDatumCache creates a new datum cache
 func NewDatumCache(db *gorm.DB) *DatumCache {
 	return &DatumCache{
-		cache: make(map[string]uint64),
+		cache: make(map[string]bool),
 		db:    db,
 	}
 }
 
-// GetOrCreateDatum retrieves or creates a datum ID
-func (dc *DatumCache) GetOrCreateDatum(tx *gorm.DB, txID uint64, datumHash []byte, datumBytes []byte) (uint64, error) {
+// EnsureDatum ensures a datum exists
+func (dc *DatumCache) EnsureDatum(tx *gorm.DB, txHash []byte, datumHash []byte, datumBytes []byte) error {
 	hashHex := hex.EncodeToString(datumHash)
 	
 	// Check cache first
 	dc.mutex.RLock()
-	if id, exists := dc.cache[hashHex]; exists {
+	if exists := dc.cache[hashHex]; exists {
 		dc.mutex.RUnlock()
-		return id, nil
+		return nil
 	}
 	dc.mutex.RUnlock()
 
@@ -118,33 +118,33 @@ func (dc *DatumCache) GetOrCreateDatum(tx *gorm.DB, txID uint64, datumHash []byt
 	if result.Error == nil {
 		// Found in database, cache it
 		dc.mutex.Lock()
-		dc.cache[hashHex] = datum.ID
+		dc.cache[hashHex] = true
 		dc.mutex.Unlock()
-		return datum.ID, nil
+		return nil
 	}
 
 	if result.Error != gorm.ErrRecordNotFound {
-		return 0, fmt.Errorf("database error: %w", result.Error)
+		return fmt.Errorf("database error: %w", result.Error)
 	}
 
 	// Create new datum
 	datum = models.Datum{
-		TxID:  txID,
-		Hash:  datumHash,
-		Value: datumBytes,
-		Bytes: datumBytes,
+		TxHash: txHash,
+		Hash:   datumHash,
+		Value:  datumBytes,
+		Bytes:  datumBytes,
 	}
 
 	if err := tx.Create(&datum).Error; err != nil {
-		return 0, fmt.Errorf("failed to create datum: %w", err)
+		return fmt.Errorf("failed to create datum: %w", err)
 	}
 
-	// Cache the new ID
+	// Cache existence
 	dc.mutex.Lock()
-	dc.cache[hashHex] = datum.ID
+	dc.cache[hashHex] = true
 	dc.mutex.Unlock()
 
-	return datum.ID, nil
+	return nil
 }
 
 // NewScriptProcessor creates a new script processor
@@ -158,54 +158,54 @@ func NewScriptProcessor(db *gorm.DB) *ScriptProcessor {
 }
 
 // ProcessTransactionScripts processes scripts from a transaction witness set
-func (sp *ScriptProcessor) ProcessTransactionScripts(ctx context.Context, tx *gorm.DB, txID uint64, witnessSet interface{}) error {
+func (sp *ScriptProcessor) ProcessTransactionScripts(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
 	if witnessSet == nil {
 		return nil
 	}
 
 	// Process native scripts
-	if err := sp.ProcessNativeScripts(ctx, tx, txID, witnessSet); err != nil {
+	if err := sp.ProcessNativeScripts(ctx, tx, txHash, witnessSet); err != nil {
 		sp.errorCollector.ProcessingWarning("ScriptProcessor", "ProcessNativeScripts",
 			fmt.Sprintf("failed to process native scripts: %v", err),
-			fmt.Sprintf("tx_id:%d", txID))
+			fmt.Sprintf("tx_hash:%x", txHash))
 	}
 
 	// Process Plutus V1 scripts
-	if err := sp.ProcessPlutusV1Scripts(ctx, tx, txID, witnessSet); err != nil {
+	if err := sp.ProcessPlutusV1Scripts(ctx, tx, txHash, witnessSet); err != nil {
 		sp.errorCollector.ProcessingWarning("ScriptProcessor", "ProcessPlutusV1Scripts",
 			fmt.Sprintf("failed to process PlutusV1 scripts: %v", err),
-			fmt.Sprintf("tx_id:%d", txID))
+			fmt.Sprintf("tx_hash:%x", txHash))
 	}
 
 	// Process Plutus V2 scripts
-	if err := sp.ProcessPlutusV2Scripts(ctx, tx, txID, witnessSet); err != nil {
+	if err := sp.ProcessPlutusV2Scripts(ctx, tx, txHash, witnessSet); err != nil {
 		sp.errorCollector.ProcessingWarning("ScriptProcessor", "ProcessPlutusV2Scripts",
 			fmt.Sprintf("failed to process PlutusV2 scripts: %v", err),
-			fmt.Sprintf("tx_id:%d", txID))
+			fmt.Sprintf("tx_hash:%x", txHash))
 	}
 
 	// Process Plutus V3 scripts
-	if err := sp.ProcessPlutusV3Scripts(ctx, tx, txID, witnessSet); err != nil {
+	if err := sp.ProcessPlutusV3Scripts(ctx, tx, txHash, witnessSet); err != nil {
 		sp.errorCollector.ProcessingWarning("ScriptProcessor", "ProcessPlutusV3Scripts",
 			fmt.Sprintf("failed to process PlutusV3 scripts: %v", err),
-			fmt.Sprintf("tx_id:%d", txID))
+			fmt.Sprintf("tx_hash:%x", txHash))
 	}
 
 	return nil
 }
 
 // ProcessNativeScripts processes native scripts from witness set
-func (sp *ScriptProcessor) ProcessNativeScripts(ctx context.Context, tx *gorm.DB, txID uint64, witnessSet interface{}) error {
+func (sp *ScriptProcessor) ProcessNativeScripts(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
 	switch ws := witnessSet.(type) {
 	case interface{ NativeScripts() []common.NativeScript }:
 		scripts := ws.NativeScripts()
 		
 		if len(scripts) > 0 {
-			log.Printf("Processing %d native scripts for tx_id=%d", len(scripts), txID)
+			log.Printf("Processing %d native scripts for tx_hash=%x", len(scripts), txHash)
 		}
 		
 		for i, script := range scripts {
-			if err := sp.processScript(tx, txID, script, "native", nil); err != nil {
+			if err := sp.processScript(tx, txHash, script, "native", nil); err != nil {
 				log.Printf("Warning: failed to process native script %d: %v", i+1, err)
 				continue
 			}
@@ -215,12 +215,12 @@ func (sp *ScriptProcessor) ProcessNativeScripts(ctx context.Context, tx *gorm.DB
 }
 
 // ProcessPlutusV1Scripts processes PlutusV1 scripts from witness set
-func (sp *ScriptProcessor) ProcessPlutusV1Scripts(ctx context.Context, tx *gorm.DB, txID uint64, witnessSet interface{}) error {
+func (sp *ScriptProcessor) ProcessPlutusV1Scripts(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
 	switch ws := witnessSet.(type) {
 	case interface{ PlutusV1Scripts() [][]byte }:
 		scripts := ws.PlutusV1Scripts()
 		for _, script := range scripts {
-			if err := sp.processScript(tx, txID, script, "plutus_v1", nil); err != nil {
+			if err := sp.processScript(tx, txHash, script, "plutus_v1", nil); err != nil {
 				log.Printf("[WARNING] Failed to process PlutusV1 script: %v", err)
 				continue
 			}
@@ -230,12 +230,12 @@ func (sp *ScriptProcessor) ProcessPlutusV1Scripts(ctx context.Context, tx *gorm.
 }
 
 // ProcessPlutusV2Scripts processes PlutusV2 scripts from witness set
-func (sp *ScriptProcessor) ProcessPlutusV2Scripts(ctx context.Context, tx *gorm.DB, txID uint64, witnessSet interface{}) error {
+func (sp *ScriptProcessor) ProcessPlutusV2Scripts(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
 	switch ws := witnessSet.(type) {
 	case interface{ PlutusV2Scripts() [][]byte }:
 		scripts := ws.PlutusV2Scripts()
 		for _, script := range scripts {
-			if err := sp.processScript(tx, txID, script, "plutus_v2", nil); err != nil {
+			if err := sp.processScript(tx, txHash, script, "plutus_v2", nil); err != nil {
 				log.Printf("[WARNING] Failed to process PlutusV2 script: %v", err)
 				continue
 			}
@@ -245,12 +245,12 @@ func (sp *ScriptProcessor) ProcessPlutusV2Scripts(ctx context.Context, tx *gorm.
 }
 
 // ProcessPlutusV3Scripts processes PlutusV3 scripts from witness set
-func (sp *ScriptProcessor) ProcessPlutusV3Scripts(ctx context.Context, tx *gorm.DB, txID uint64, witnessSet interface{}) error {
+func (sp *ScriptProcessor) ProcessPlutusV3Scripts(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
 	switch ws := witnessSet.(type) {
 	case interface{ PlutusV3Scripts() [][]byte }:
 		scripts := ws.PlutusV3Scripts()
 		for _, script := range scripts {
-			if err := sp.processScript(tx, txID, script, "plutus_v3", nil); err != nil {
+			if err := sp.processScript(tx, txHash, script, "plutus_v3", nil); err != nil {
 				log.Printf("[WARNING] Failed to process PlutusV3 script: %v", err)
 				continue
 			}
@@ -260,7 +260,7 @@ func (sp *ScriptProcessor) ProcessPlutusV3Scripts(ctx context.Context, tx *gorm.
 }
 
 // processScript processes a single script
-func (sp *ScriptProcessor) processScript(tx *gorm.DB, txID uint64, script interface{}, scriptType string, additionalData map[string]interface{}) error {
+func (sp *ScriptProcessor) processScript(tx *gorm.DB, txHash []byte, script interface{}, scriptType string, additionalData map[string]interface{}) error {
 	var scriptBytes []byte
 	var scriptHash []byte
 	var scriptJson *string
@@ -307,8 +307,7 @@ func (sp *ScriptProcessor) processScript(tx *gorm.DB, txID uint64, script interf
 	}
 
 	// Store the script
-	_, err := sp.scriptCache.GetOrCreateScript(tx, txID, scriptHash, scriptType, scriptBytes, scriptJson)
-	if err != nil {
+	if err := sp.scriptCache.EnsureScript(tx, txHash, scriptHash, scriptType, scriptBytes, scriptJson); err != nil {
 		return fmt.Errorf("failed to store script: %w", err)
 	}
 
@@ -317,7 +316,7 @@ func (sp *ScriptProcessor) processScript(tx *gorm.DB, txID uint64, script interf
 }
 
 // ProcessRedeemers processes redeemers from a transaction
-func (sp *ScriptProcessor) ProcessRedeemers(ctx context.Context, tx *gorm.DB, txID uint64, witnessSet interface{}) error {
+func (sp *ScriptProcessor) ProcessRedeemers(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
 	switch ws := witnessSet.(type) {
 	case interface{ Redeemers() common.TransactionWitnessRedeemers }:
 		redeemers := ws.Redeemers()
@@ -334,10 +333,10 @@ func (sp *ScriptProcessor) ProcessRedeemers(ctx context.Context, tx *gorm.DB, tx
 		} {
 			indexes := redeemers.Indexes(tag)
 			for _, index := range indexes {
-				if err := sp.processRedeemerByTagAndIndex(tx, txID, tag, index, redeemers); err != nil {
+				if err := sp.processRedeemerByTagAndIndex(tx, txHash, tag, index, redeemers); err != nil {
 					sp.errorCollector.ProcessingWarning("ScriptProcessor", "processRedeemer",
 						fmt.Sprintf("failed to process redeemer: %v", err),
-						fmt.Sprintf("tx_id:%d,tag:%d,index:%d", txID, tag, index))
+						fmt.Sprintf("tx_hash:%x,tag:%d,index:%d", txHash, tag, index))
 					continue
 				}
 			}
@@ -347,7 +346,7 @@ func (sp *ScriptProcessor) ProcessRedeemers(ctx context.Context, tx *gorm.DB, tx
 }
 
 // processRedeemerByTagAndIndex processes a single redeemer by tag and index
-func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txID uint64, tag common.RedeemerTag, index uint, redeemers common.TransactionWitnessRedeemers) error {
+func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txHash []byte, tag common.RedeemerTag, index uint, redeemers common.TransactionWitnessRedeemers) error {
 	// Get redeemer data and execution units
 	data, exUnits := redeemers.Value(index, tag)
 	
@@ -385,10 +384,10 @@ func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txID uint64
 
 	// Create redeemer data record
 	redeemerDataRecord := &models.RedeemerData{
-		Hash:  dataHash,
-		TxID:  txID,
-		Value: redeemerData,
-		Bytes: redeemerData,
+		Hash:   dataHash,
+		TxHash: txHash,
+		Value:  redeemerData,
+		Bytes:  redeemerData,
 	}
 
 	if err := tx.Create(redeemerDataRecord).Error; err != nil {
@@ -396,15 +395,17 @@ func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txID uint64
 	}
 
 	// Create redeemer record
+	redeemerHash := models.GenerateRedeemerHash(txHash, purpose, uint32(index))
 	redeemerRecord := &models.Redeemer{
-		TxID:       txID,
-		Purpose:    purpose,
-		Index:      uint32(index),
-		DataID:     &redeemerDataRecord.ID,
-		ScriptHash: nil,     // Would need to be linked to actual script
-		UnitMem:    exUnits.Memory,
-		UnitSteps:  exUnits.Steps,
-		Fee:        nil,     // TODO: Calculate fee based on execution units
+		Hash:             redeemerHash,
+		TxHash:           txHash,
+		Purpose:          purpose,
+		Index:            uint32(index),
+		RedeemerDataHash: dataHash,
+		ScriptHash:       nil,     // Would need to be linked to actual script
+		UnitMem:          exUnits.Memory,
+		UnitSteps:        exUnits.Steps,
+		Fee:              nil,     // TODO: Calculate fee based on execution units
 	}
 
 	if err := tx.Create(redeemerRecord).Error; err != nil {
@@ -416,7 +417,7 @@ func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txID uint64
 }
 
 // processRedeemer processes a single redeemer (legacy method)
-func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txID uint64, index int, redeemer interface{}) error {
+func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txHash []byte, index int, redeemer interface{}) error {
 	// Extract redeemer data
 	var redeemerData []byte
 	var purpose string = "spend" // Default to most common purpose
@@ -468,10 +469,10 @@ func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txID uint64, index int, 
 
 	// Create redeemer data record
 	redeemerDataRecord := &models.RedeemerData{
-		Hash:  dataHash,
-		TxID:  txID,
-		Value: redeemerData,
-		Bytes: redeemerData,
+		Hash:   dataHash,
+		TxHash: txHash,
+		Value:  redeemerData,
+		Bytes:  redeemerData,
 	}
 
 	if err := tx.Create(redeemerDataRecord).Error; err != nil {
@@ -479,15 +480,17 @@ func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txID uint64, index int, 
 	}
 
 	// Create redeemer record
+	redeemerHash := models.GenerateRedeemerHash(txHash, purpose, redeemerIndex)
 	redeemerRecord := &models.Redeemer{
-		TxID:       txID,
-		Purpose:    purpose,
-		Index:      redeemerIndex,
-		DataID:    &redeemerDataRecord.ID,
-		ScriptHash: nil,     // Would need to be linked to actual script
-		UnitMem:    1000000, // TODO: Extract from redeemer ExUnits when available
-		UnitSteps:  500000,  // TODO: Extract from redeemer ExUnits when available
-		Fee:        nil,     // TODO: Calculate fee based on execution units
+		Hash:             redeemerHash,
+		TxHash:           txHash,
+		Purpose:          purpose,
+		Index:            redeemerIndex,
+		RedeemerDataHash: dataHash,
+		ScriptHash:       nil,     // Would need to be linked to actual script
+		UnitMem:          1000000, // TODO: Extract from redeemer ExUnits when available
+		UnitSteps:        500000,  // TODO: Extract from redeemer ExUnits when available
+		Fee:              nil,     // TODO: Calculate fee based on execution units
 	}
 
 	if err := tx.Create(redeemerRecord).Error; err != nil {
@@ -551,10 +554,36 @@ type ScriptStats struct {
 // ClearCache clears the script and datum caches
 func (sp *ScriptProcessor) ClearCache() {
 	sp.scriptCache.mutex.Lock()
-	sp.scriptCache.cache = make(map[string]uint64)
+	sp.scriptCache.cache = make(map[string]bool)
 	sp.scriptCache.mutex.Unlock()
 
 	sp.datumCache.mutex.Lock()
-	sp.datumCache.cache = make(map[string]uint64)
+	sp.datumCache.cache = make(map[string]bool)
 	sp.datumCache.mutex.Unlock()
+}
+
+// ProcessTransaction processes scripts and related data from a transaction
+func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transaction interface{}, blockType uint) error {
+	// Extract witness set if available
+	var witnessSet interface{}
+	switch txWithWitness := transaction.(type) {
+	case interface{ WitnessSet() interface{} }:
+		witnessSet = txWithWitness.WitnessSet()
+	case interface{ Witnesses() interface{} }:
+		witnessSet = txWithWitness.Witnesses()
+	}
+	
+	if witnessSet != nil {
+		// Process scripts
+		if err := sp.ProcessTransactionScripts(context.Background(), tx, txHash, witnessSet); err != nil {
+			return fmt.Errorf("failed to process scripts: %w", err)
+		}
+		
+		// Process redeemers
+		if err := sp.ProcessRedeemers(context.Background(), tx, txHash, witnessSet); err != nil {
+			return fmt.Errorf("failed to process redeemers: %w", err)
+		}
+	}
+	
+	return nil
 }
