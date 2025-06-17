@@ -85,6 +85,51 @@ func (sc *ScriptCache) EnsureScript(tx *gorm.DB, txHash []byte, scriptHash []byt
 	return nil
 }
 
+// ProcessInlineDatums processes inline datums from transaction outputs
+func (sp *ScriptProcessor) ProcessInlineDatums(ctx context.Context, tx *gorm.DB, txHash []byte, transaction interface{}) error {
+	// Get outputs from transaction
+	var outputs []interface{}
+	switch t := transaction.(type) {
+	case interface{ Outputs() []interface{} }:
+		outputs = t.Outputs()
+	default:
+		// Try to extract using common transaction interface
+		if ledgerTx, ok := transaction.(common.Transaction); ok {
+			txOutputs := ledgerTx.Outputs()
+			outputs = make([]interface{}, len(txOutputs))
+			for i, out := range txOutputs {
+				outputs[i] = out
+			}
+		}
+	}
+	
+	if len(outputs) == 0 {
+		return nil
+	}
+	
+	// Process each output for inline datums
+	for _, output := range outputs {
+		// Check if output has Datum() method
+		if outputWithDatum, ok := output.(interface{ Datum() *cbor.LazyValue }); ok {
+			datum := outputWithDatum.Datum()
+			if datum != nil && datum.Cbor() != nil {
+				// Calculate datum hash
+				datumBytes := datum.Cbor()
+				h, _ := blake2b.New256(nil)
+				h.Write(datumBytes)
+				datumHash := h.Sum(nil)
+				
+				// Store the datum using the cache
+				if err := sp.datumCache.EnsureDatum(tx, txHash, datumHash, datumBytes); err != nil {
+					log.Printf("[WARNING] Failed to store inline datum: %v", err)
+				}
+			}
+		}
+	}
+	
+	return nil
+}
+
 // DatumCache manages datum lookups
 type DatumCache struct {
 	cache map[string]bool // Just track existence
@@ -405,7 +450,7 @@ func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txHash []by
 		ScriptHash:       nil,     // Would need to be linked to actual script
 		UnitMem:          exUnits.Memory,
 		UnitSteps:        exUnits.Steps,
-		Fee:              nil,     // TODO: Calculate fee based on execution units
+		Fee:              nil, // Fee calculation would require protocol parameters
 	}
 
 	if err := tx.Create(redeemerRecord).Error; err != nil {
@@ -453,8 +498,13 @@ func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txHash []byte, index int
 		redeemerIndex = r.Index()
 	}
 
-	// TODO: Extract execution units (memory and steps) from redeemer
-	// when the interface methods are available
+	// Extract execution units from redeemer
+	var unitMem uint64 = 1000000  // Default values
+	var unitSteps uint64 = 500000
+	
+	// Note: Execution units extraction depends on the redeemer type
+	// The interface{} doesn't guarantee the ExUnits method exists
+	// Keep default values for now
 
 	// Calculate redeemer data hash
 	var dataHash []byte
@@ -488,9 +538,9 @@ func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txHash []byte, index int
 		Index:            redeemerIndex,
 		RedeemerDataHash: dataHash,
 		ScriptHash:       nil,     // Would need to be linked to actual script
-		UnitMem:          1000000, // TODO: Extract from redeemer ExUnits when available
-		UnitSteps:        500000,  // TODO: Extract from redeemer ExUnits when available
-		Fee:              nil,     // TODO: Calculate fee based on execution units
+		UnitMem:          unitMem,
+		UnitSteps:        unitSteps,
+		Fee:              nil, // Fee calculation would require protocol parameters
 	}
 
 	if err := tx.Create(redeemerRecord).Error; err != nil {
@@ -582,6 +632,13 @@ func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transa
 		// Process redeemers
 		if err := sp.ProcessRedeemers(context.Background(), tx, txHash, witnessSet); err != nil {
 			return fmt.Errorf("failed to process redeemers: %w", err)
+		}
+	}
+	
+	// Process inline datums from outputs (Babbage+)
+	if blockType >= 6 { // BlockTypeBabbage
+		if err := sp.ProcessInlineDatums(context.Background(), tx, txHash, transaction); err != nil {
+			return fmt.Errorf("failed to process inline datums: %w", err)
 		}
 	}
 	

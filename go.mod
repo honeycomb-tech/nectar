@@ -5,7 +5,7 @@ go 1.23.6
 toolchain go1.24.3
 
 require (
-	github.com/blinklabs-io/gouroboros v0.121.0
+	github.com/blinklabs-io/gouroboros v0.125.1
 	golang.org/x/crypto v0.39.0
 	golang.org/x/time v0.12.0
 	gorm.io/driver/mysql v1.5.7
@@ -27,6 +27,3 @@ require (
 	golang.org/x/text v0.26.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
 )
-
-// NECTAR FIX: Use local patched gouroboros to fix concurrency panic
-replace github.com/blinklabs-io/gouroboros => ./gouroboros

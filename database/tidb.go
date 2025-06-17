@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	DefaultTiDBDSN = "root:Ds*uS+pG278T@-3K60@tcp(127.0.0.1:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=67108864&autocommit=true&tx_isolation='READ-COMMITTED'"
-	NectarDBDSN    = "root:Ds*uS+pG278T@-3K60@tcp(127.0.0.1:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=67108864&autocommit=true&tx_isolation='READ-COMMITTED'"
+	// DefaultTiDBDSN is used only if TIDB_DSN environment variable is not set
+	// In production, always set TIDB_DSN with proper credentials
+	DefaultTiDBDSN = "root:@tcp(127.0.0.1:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=67108864&autocommit=true&tx_isolation='READ-COMMITTED'"
+	// Deprecated: Use NECTAR_DSN environment variable instead
+	NectarDBDSN    = "root:@tcp(127.0.0.1:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=67108864&autocommit=true&tx_isolation='READ-COMMITTED'"
 )
 
 // InitTiDB initializes the TiDB connection with optimizations
@@ -21,6 +24,8 @@ func InitTiDB() (*gorm.DB, error) {
 	// Get DSN from environment or use default
 	baseDSN := os.Getenv("TIDB_DSN")
 	if baseDSN == "" {
+		// Log warning if using default DSN
+		log.Println("WARNING: TIDB_DSN not set, using default DSN without password. Set TIDB_DSN in production!")
 		baseDSN = DefaultTiDBDSN
 	}
 
@@ -47,7 +52,12 @@ func InitTiDB() (*gorm.DB, error) {
 	// Now connect to the nectar database
 	nectarDSN := os.Getenv("NECTAR_DSN")
 	if nectarDSN == "" {
-		nectarDSN = NectarDBDSN
+		// Try TIDB_DSN as fallback
+		nectarDSN = os.Getenv("TIDB_DSN")
+		if nectarDSN == "" {
+			log.Println("WARNING: NECTAR_DSN not set, using default DSN without password. Set NECTAR_DSN in production!")
+			nectarDSN = NectarDBDSN
+		}
 	}
 
 	db, err := gorm.Open(mysql.Open(nectarDSN), &gorm.Config{
@@ -101,6 +111,11 @@ func AutoMigrate(db *gorm.DB) error {
 	// Apply TiDB-specific optimizations after migration
 	if err := applyTiDBOptimizations(db); err != nil {
 		log.Printf("Warning: failed to apply TiDB optimizations: %v", err)
+	}
+
+	// Create performance indexes
+	if err := createPerformanceIndexes(db); err != nil {
+		log.Printf("Warning: failed to create performance indexes: %v", err)
 	}
 
 	log.Println("Database migrations completed successfully")
@@ -177,6 +192,35 @@ func enableTiDBOptimizations(db *gorm.DB) error {
 		}
 	}
 	
+	return nil
+}
+
+// createPerformanceIndexes creates additional indexes for performance optimization
+func createPerformanceIndexes(db *gorm.DB) error {
+	log.Println("Creating performance indexes...")
+	
+	performanceIndexes := []string{
+		// Index for fast lookup of latest blocks (fixes slow query)
+		"CREATE INDEX IF NOT EXISTS idx_blocks_slot_no_desc ON blocks(slot_no DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_blocks_slot_hash ON blocks(slot_no DESC, hash)",
+		
+		// Additional performance indexes for common queries
+		"CREATE INDEX IF NOT EXISTS idx_blocks_block_no_desc ON blocks(block_no DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_txes_block_index ON txes(block_hash, block_index)",
+		"CREATE INDEX IF NOT EXISTS idx_tx_outs_value ON tx_outs(value)",
+		"CREATE INDEX IF NOT EXISTS idx_delegations_addr_epoch ON delegations(addr_hash, active_epoch_no)",
+		"CREATE INDEX IF NOT EXISTS idx_pool_stats_epoch_hash ON pool_stats(epoch_no, pool_hash)",
+	}
+	
+	for _, index := range performanceIndexes {
+		log.Printf("Creating index: %s", index)
+		if err := db.Exec(index).Error; err != nil {
+			log.Printf("Warning: failed to create performance index (%s): %v", index, err)
+			// Continue with other indexes even if one fails
+		}
+	}
+	
+	log.Println("Performance indexes created")
 	return nil
 }
 

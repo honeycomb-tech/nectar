@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,18 +31,62 @@ import (
 	"nectar/statequery"
 )
 
-const (
-	// Parallel processing - multiple connections for better throughput
-	DB_CONNECTION_POOL = 4
-
+// Configuration defaults - can be overridden via environment variables
+var (
+	// Parallel processing - balanced with TiDB cluster needs
+	DB_CONNECTION_POOL    = getIntEnv("DB_CONNECTION_POOL", 8)
+	WORKER_COUNT         = getIntEnv("WORKER_COUNT", 8)
+	
 	// Timing
-	STATS_INTERVAL        = 3 * time.Second
-	BLOCKFETCH_TIMEOUT    = 30 * time.Second
-	BULK_FETCH_RANGE_SIZE = 2000
-
-	// Network
-	DefaultCardanoNodeSocket = "/root/workspace/cardano-node-guild/socket/node.socket"
+	STATS_INTERVAL        = getDurationEnv("STATS_INTERVAL", 3*time.Second)
+	BLOCKFETCH_TIMEOUT    = getDurationEnv("BLOCKFETCH_TIMEOUT", 30*time.Second)
+	BULK_FETCH_RANGE_SIZE = getIntEnv("BULK_FETCH_RANGE_SIZE", 2000)
+	
+	// Bulk mode
+	BULK_MODE_ENABLED     = getBoolEnv("BULK_MODE_ENABLED", false)
 )
+
+var (
+	// Network - configurable via environment
+	DefaultCardanoNodeSocket = getSocketFromEnv()
+)
+
+// getSocketFromEnv returns the socket path from environment or default
+func getSocketFromEnv() string {
+	if socket := os.Getenv("CARDANO_NODE_SOCKET"); socket != "" {
+		return socket
+	}
+	return "/opt/cardano/cnode/sockets/node.socket"
+}
+
+// getIntEnv gets an integer from environment or returns default
+func getIntEnv(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+// getBoolEnv gets a boolean from environment or returns default
+func getBoolEnv(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		boolValue, _ := strconv.ParseBool(value)
+		return boolValue
+	}
+	return defaultValue
+}
+
+// getDurationEnv gets a duration from environment or returns default
+func getDurationEnv(key string, defaultValue time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			return duration
+		}
+	}
+	return defaultValue
+}
 
 // Enhanced error tracking with real-time monitoring
 type ErrorStatistics struct {
@@ -67,15 +112,13 @@ func NewSmartSocketDetector() *SmartSocketDetector {
 			// User-specified environment variable (highest priority)
 			os.Getenv("CARDANO_NODE_SOCKET"),
 
-			// Primary working socket (current installation)
+			// Common production paths
 			"/opt/cardano/cnode/sockets/node.socket",
-
-			// Backup dolos socket (if dolos is running)
-			"/root/workspace/cardano-stack/dolos/data/dolos.socket.sock",
-
-			// Legacy/alternative paths
-			"/tmp/node.socket",
 			"/var/cardano/node.socket",
+			"/run/cardano/node.socket",
+			
+			// Development/test paths
+			"/tmp/node.socket",
 			DefaultCardanoNodeSocket,
 		},
 		timeoutDuration: 2 * time.Second,
@@ -213,6 +256,19 @@ type ReferenceAlignedIndexer struct {
 	// Sync mode tracking
 	isBulkSync      atomic.Bool
 	bulkSyncEndSlot uint64
+	
+	// Async block processing
+	blockQueue    chan blockQueueItem
+	blockWorkers  int
+	activeWorkers atomic.Int32
+	workerWg      sync.WaitGroup
+}
+
+// blockQueueItem represents a block to be processed
+type blockQueueItem struct {
+	block     ledger.Block
+	blockType uint
+	retries   int
 }
 
 type PerformanceStats struct {
@@ -292,6 +348,11 @@ func (dlw *DashboardLogWriter) Write(p []byte) (n int, err error) {
 		case strings.Contains(cleanMsg, "[SYSTEM]"):
 			activityType = "system"
 		case strings.Contains(cleanMsg, "[INFO]"):
+			// Skip verbose INFO messages that clutter the dashboard
+			if strings.Contains(cleanMsg, "at capacity") || 
+			   strings.Contains(cleanMsg, "applying backpressure") {
+				return len(p), nil
+			}
 			activityType = "info"
 		// Then look for content patterns
 		case strings.Contains(cleanMsg, "Processing") && strings.Contains(cleanMsg, "block"):
@@ -422,6 +483,8 @@ func NewReferenceAlignedIndexer(db *gorm.DB) (*ReferenceAlignedIndexer, error) {
 			entries: make([]ActivityEntry, 0),
 			maxSize: 100,
 		},
+		
+		// Parallel processing happens at transaction level, not block level
 	}
 
 	// Enable dashboard by default
@@ -580,30 +643,28 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 		}()
 	}
 
-	// Start performance monitoring (sequential mode)
+	// Start performance monitoring
 	rai.startPerformanceMonitoring()
 
-	// Start sync process using reference pattern (sequential processing)
-	if rai.nodeToNodeMode.Load() && rai.useBlockFetch.Load() {
-		log.Println(" Starting REFERENCE BULK SYNC MODE (Sequential Processing)")
-		if err := rai.startReferenceBulkSync(); err != nil {
-			log.Printf("[WARNING] Bulk sync failed, falling back to ChainSync: %v", err)
-			if err := rai.startReferenceChainSync(); err != nil {
-				return fmt.Errorf("failed to start ChainSync fallback: %w", err)
-			}
-		}
-	} else {
-		log.Println(" Starting REFERENCE CHAINSYNC MODE")
-		if err := rai.startReferenceChainSync(); err != nil {
-			return fmt.Errorf("failed to start ChainSync: %w", err)
-		}
+	// Initialize block queue and workers for async processing
+	// Use 8 workers to balance with TiDB cluster resource usage
+	rai.blockWorkers = 8
+	// Larger queue to reduce backpressure frequency
+	rai.blockQueue = make(chan blockQueueItem, 10000)
+	log.Printf(" Initializing %d block processing workers with queue capacity %d", rai.blockWorkers, 10000)
+	rai.startBlockWorkers()
+
+	// Start ChainSync
+	log.Printf(" Starting CHAINSYNC with async block processing (%d workers)", rai.blockWorkers)
+	if err := rai.startReferenceChainSync(); err != nil {
+		return fmt.Errorf("failed to start ChainSync: %w", err)
 	}
 
 	rai.isRunning.Store(true)
 
-	// Sequential processing - no workers to wait for
-	// Keep running until shutdown
-	select {}
+	// Wait for workers to finish
+	rai.workerWg.Wait()
+	return nil
 }
 
 // Stop gracefully shuts down the indexer
@@ -626,6 +687,12 @@ func (rai *ReferenceAlignedIndexer) Stop() error {
 
 	// Cancel context
 	rai.cancel()
+	
+	// Close block queue to signal workers to stop
+	if rai.blockQueue != nil {
+		close(rai.blockQueue)
+		log.Printf(" Waiting for %d workers to finish...", rai.activeWorkers.Load())
+	}
 
 	// Close connection
 	rai.connMutex.Lock()
@@ -694,7 +761,7 @@ func (rai *ReferenceAlignedIndexer) buildChainSyncConfig() chainsync.Config {
 	return chainsync.NewConfig(
 		chainsync.WithRollBackwardFunc(rai.chainSyncRollBackwardHandler),
 		chainsync.WithRollForwardFunc(rai.chainSyncRollForwardHandler),
-		chainsync.WithPipelineLimit(50), // Reference uses this value
+		chainsync.WithPipelineLimit(50), // Standard pipeline limit
 		chainsync.WithBlockTimeout(10*time.Second),
 	)
 }
@@ -835,7 +902,35 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollForwardHandler(
 	// Track tip information
 	rai.trackTipDistance(block.SlotNumber(), tip)
 
-	return rai.processBlockSequentially(block, blockType)
+	// Always queue blocks for async processing to prevent ChainSync timeouts
+	select {
+	case rai.blockQueue <- blockQueueItem{
+		block:     block,
+		blockType: blockType,
+		retries:   0,
+	}:
+		// Successfully queued - return immediately so ChainSync can request next block
+		return nil
+	default:
+		// Queue is full - apply backpressure (this is normal during fast sync)
+		// Don't log this to avoid dashboard clutter
+		
+		// Wait for queue to have space
+		select {
+		case rai.blockQueue <- blockQueueItem{
+			block:     block,
+			blockType: blockType,
+			retries:   0,
+		}:
+			return nil
+		case <-time.After(5 * time.Second):
+			// This is bad - workers are too slow
+			errors.Get().ProcessingError("Block", "Process", fmt.Errorf("workers cannot keep up, queue full for 5 seconds"))
+			return fmt.Errorf("workers cannot keep up, queue full for 5 seconds")
+		case <-rai.ctx.Done():
+			return fmt.Errorf("context cancelled")
+		}
+	}
 }
 
 func (rai *ReferenceAlignedIndexer) blockFetchBlockHandler(
@@ -843,7 +938,17 @@ func (rai *ReferenceAlignedIndexer) blockFetchBlockHandler(
 	blockType uint,
 	blockData ledger.Block,
 ) error {
-	return rai.processBlockSequentially(blockData, blockType)
+	// Queue the block for async processing
+	select {
+	case rai.blockQueue <- blockQueueItem{
+		block:     blockData,
+		blockType: blockType,
+		retries:   0,
+	}:
+		return nil
+	case <-rai.ctx.Done():
+		return fmt.Errorf("context cancelled")
+	}
 }
 
 func (rai *ReferenceAlignedIndexer) batchDoneHandler(ctx blockfetch.CallbackContext) error {
@@ -851,66 +956,6 @@ func (rai *ReferenceAlignedIndexer) batchDoneHandler(ctx blockfetch.CallbackCont
 	return nil
 }
 
-// processBlockSequentially - Direct sequential processing aligned with gouroboros
-func (rai *ReferenceAlignedIndexer) processBlockSequentially(block ledger.Block, blockType uint) error {
-	// Get database connection
-	if len(rai.dbConnections) == 0 {
-		return fmt.Errorf("no database connections available")
-	}
-	
-	// Detect bulk sync mode
-	currentSlot := block.SlotNumber()
-	tipSlot := rai.tipSlot.Load()
-	
-	// If we're more than 10,000 slots behind, enable bulk sync mode
-	if tipSlot > 0 && currentSlot > 0 {
-		slotGap := tipSlot - currentSlot
-		
-		// Enable bulk sync if we're far behind
-		if slotGap > 10000 && !rai.isBulkSync.Load() {
-			rai.isBulkSync.Store(true)
-			rai.bulkSyncEndSlot = tipSlot - 1000 // Switch to normal mode 1000 slots from tip
-			log.Printf("Entering BULK SYNC mode (gap: %d slots)", slotGap)
-			
-			// Disable some checks for performance
-			if len(rai.dbConnections) > 0 {
-				db := rai.dbConnections[0].GetDB()
-				db.Exec("SET FOREIGN_KEY_CHECKS = 0")
-			}
-		}
-		
-		// Check if we should exit bulk sync
-		if rai.isBulkSync.Load() && currentSlot >= rai.bulkSyncEndSlot {
-			rai.isBulkSync.Store(false)
-			log.Printf("Exiting BULK SYNC mode, approaching chain tip")
-			
-			// Re-enable checks
-			if len(rai.dbConnections) > 0 {
-				db := rai.dbConnections[0].GetDB()
-				db.Exec("SET FOREIGN_KEY_CHECKS = 1")
-			}
-		}
-	}
-
-	// Round-robin connection selection for better load distribution
-	processorIndex := atomic.AddUint64(&rai.processorIndex, 1) % uint64(len(rai.dbConnections))
-	blockProcessor := rai.dbConnections[processorIndex]
-
-	// Process the block directly using the existing processor
-	err := blockProcessor.ProcessBlock(rai.ctx, block, blockType)
-	if err != nil {
-		errors.Get().ProcessingError("BlockProcessor", "ProcessBlock", fmt.Errorf("failed to process block slot %d: %w", block.SlotNumber(), err))
-		return fmt.Errorf("failed to process block: %w", err)
-	}
-
-	// Update statistics
-	rai.updateSequentialStats(block)
-
-	// Update last processed slot
-	rai.lastProcessedSlot.Store(block.SlotNumber())
-
-	return nil
-}
 
 // updateSequentialStats - Update performance statistics for sequential processing
 func (rai *ReferenceAlignedIndexer) updateSequentialStats(block ledger.Block) {
@@ -922,6 +967,54 @@ func (rai *ReferenceAlignedIndexer) updateSequentialStats(block ledger.Block) {
 
 	// Don't update lastStatsTime here - let dashboard calculate speed properly
 }
+
+
+// startBlockWorkers starts workers for async block processing
+func (rai *ReferenceAlignedIndexer) startBlockWorkers() {
+	for i := 0; i < rai.blockWorkers; i++ {
+		rai.workerWg.Add(1)
+		go rai.blockWorker(i)
+	}
+}
+
+// blockWorker processes blocks from the queue
+func (rai *ReferenceAlignedIndexer) blockWorker(id int) {
+	defer rai.workerWg.Done()
+	log.Printf(" Worker %d started", id)
+	rai.activeWorkers.Add(1)
+	defer rai.activeWorkers.Add(-1)
+	
+	// Use round-robin DB connection assignment
+	processor := rai.dbConnections[id % len(rai.dbConnections)]
+	
+	for {
+		select {
+		case item, ok := <-rai.blockQueue:
+			if !ok {
+				log.Printf(" Worker %d: shutting down", id)
+				return
+			}
+			
+			// Process the block using the processor's connection
+			err := processor.ProcessBlock(rai.ctx, item.block, item.blockType)
+			if err != nil {
+				log.Printf("[ERROR] Worker %d failed to process block at slot %d: %v", 
+					id, item.block.SlotNumber(), err)
+				errors.Get().ProcessingError("BlockWorker", fmt.Sprintf("Worker%d", id),
+					fmt.Errorf("slot %d: %w", item.block.SlotNumber(), err))
+			} else {
+				// Update stats
+				rai.updateSequentialStats(item.block)
+				rai.lastProcessedSlot.Store(item.block.SlotNumber())
+			}
+			
+		case <-rai.ctx.Done():
+			log.Printf(" Worker %d: context cancelled", id)
+			return
+		}
+	}
+}
+
 
 // startReferenceChainSync starts ChainSync following reference pattern with smart resuming
 func (rai *ReferenceAlignedIndexer) startReferenceChainSync() error {
@@ -949,53 +1042,15 @@ func (rai *ReferenceAlignedIndexer) startReferenceChainSync() error {
 	return nil
 }
 
-// startReferenceBulkSync follows exact reference bulk pattern with smart resuming
-func (rai *ReferenceAlignedIndexer) startReferenceBulkSync() error {
-	log.Println(" Starting reference bulk sync pattern")
-
-	// Step 1: Get available block range using ChainSync (reference pattern) with smart resuming
-	startPoints, err := rai.buildIntersectionPoints()
-	if err != nil {
-		return fmt.Errorf("failed to build intersection points: %w", err)
-	}
-
-	rai.connMutex.RLock()
-	conn := rai.oConn
-	rai.connMutex.RUnlock()
-
-	if conn == nil {
-		return fmt.Errorf("no connection available")
-	}
-
-	start, end, err := conn.ChainSync().Client.GetAvailableBlockRange(startPoints)
-	if err != nil {
-		return fmt.Errorf("failed to get available block range: %w", err)
-	}
-
-	log.Printf(" Reference bulk range: slot %d to %d (%d blocks)", start.Slot, end.Slot, end.Slot-start.Slot)
-
-	// Step 2: Stop ChainSync to prevent timeout (reference pattern)
-	if err := conn.ChainSync().Client.Stop(); err != nil {
-		return fmt.Errorf("failed to stop ChainSync: %w", err)
-	}
-
-	// Step 3: Use BlockFetch for bulk download (reference pattern)
-	if err := conn.BlockFetch().Client.GetBlockRange(start, end); err != nil {
-		return fmt.Errorf("failed to request block range: %w", err)
-	}
-
-	log.Println("[OK] Reference bulk sync started successfully")
-	return nil
-}
 
 // Performance monitoring - sequential processing
 func (rai *ReferenceAlignedIndexer) startPerformanceMonitoring() {
 	// Combined render loop with proper timing
 	go func() {
-		renderTicker := time.NewTicker(80 * time.Millisecond)
+		renderTicker := time.NewTicker(250 * time.Millisecond) // 4 FPS - smooth and efficient
 		defer renderTicker.Stop()
 		
-		statsTicker := time.NewTicker(2 * time.Second)
+		statsTicker := time.NewTicker(3 * time.Second) // Less frequent stats updates
 		defer statsTicker.Stop()
 		
 		// Update stats immediately
@@ -1095,17 +1150,24 @@ func (rai *ReferenceAlignedIndexer) prepareDashboardData() *dashboard.DashboardD
 		}
 	}
 	
+	// Get queue metrics
+	queueDepth := len(rai.blockQueue)
+	activeWorkers := rai.activeWorkers.Load()
+	
 	// Calculate era progress (only when slot changes)
 	data := &dashboard.DashboardData{
-		CurrentRate:  currentRate,
-		PeakRate:     peakRate,
-		BlockCount:   dbBlockCount,
-		CurrentSlot:  currentSlot,
-		Runtime:      rai.formatDuration(time.Since(rai.stats.startTime)),
-		MemoryUsage:  rai.getMemoryUsage(),
-		CPUUsage:     rai.getCPUUsage(),
-		TipSlot:      tipSlot,
-		TipDistance:  tipDistance,
+		CurrentRate:   currentRate,
+		PeakRate:      peakRate,
+		BlockCount:    dbBlockCount,
+		CurrentSlot:   currentSlot,
+		Runtime:       rai.formatDuration(time.Since(rai.stats.startTime)),
+		MemoryUsage:   rai.getMemoryUsage(),
+		CPUUsage:      rai.getCPUUsage(),
+		TipSlot:       tipSlot,
+		TipDistance:   tipDistance,
+		QueueDepth:    queueDepth,
+		ActiveWorkers: activeWorkers,
+		TotalWorkers:  rai.blockWorkers,
 	}
 	
 	// Calculate era progress

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 
 	ouroboros "github.com/blinklabs-io/gouroboros"
@@ -34,6 +36,16 @@ type SmartConnector struct {
 	silentMode       bool // Suppress non-critical warnings
 }
 
+// getNetworkMagicFromEnv returns the network magic from environment or default
+func getNetworkMagicFromEnv() uint32 {
+	if magic := os.Getenv("CARDANO_NETWORK_MAGIC"); magic != "" {
+		if val, err := strconv.ParseUint(magic, 10, 32); err == nil {
+			return uint32(val)
+		}
+	}
+	return 764824073 // Default to mainnet
+}
+
 // NewSmartConnector creates a new smart connector
 func NewSmartConnector(socketPath string, chainSync chainsync.Config, blockFetch blockfetch.Config) *SmartConnector {
 	return &SmartConnector{
@@ -41,6 +53,7 @@ func NewSmartConnector(socketPath string, chainSync chainsync.Config, blockFetch
 		chainSyncConfig:  chainSync,
 		blockFetchConfig: blockFetch,
 		networkMagics: []uint32{
+			getNetworkMagicFromEnv(),
 			764824073,  // Mainnet
 			1097911063, // Testnet
 			2,          // Preview

@@ -769,12 +769,30 @@ func (gp *GovernanceProcessor) convertVoteToChoice(vote uint8) models.VoteChoice
 }
 
 func (gp *GovernanceProcessor) extractCostModelID(tx *gorm.DB, action *common.ParameterChangeGovAction) *int64 {
-	// TODO: Extract cost model from parameter change
+	// Cost model extraction would require parsing the parameter changes
+	// This is complex and depends on the specific parameter update format
+	// For now, return nil as cost models are tracked separately
 	return nil
 }
 
 func (gp *GovernanceProcessor) calculateEpochFromGovAction(tx *gorm.DB, govActionID int64) uint32 {
-	// TODO: Calculate epoch from governance action
+	// Get the governance action proposal to find its slot
+	var proposal models.GovActionProposal
+	if err := tx.Where("id = ?", govActionID).First(&proposal).Error; err != nil {
+		return 0
+	}
+	
+	// Get the block to find the slot number
+	var block models.Block
+	if err := tx.Where("hash = ?", proposal.TxHash).First(&block).Error; err != nil {
+		return 0
+	}
+	
+	// Calculate epoch from slot (Shelley+ uses 432000 slots per epoch)
+	if block.SlotNo != nil {
+		return uint32(*block.SlotNo / 432000)
+	}
+	
 	return 0
 }
 

@@ -1,6 +1,6 @@
 CREATE TABLE tx_out (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    address VARCHAR(100) NOT NULL,
+    address VARCHAR(2048) NOT NULL,
     address_has_script BOOLEAN NOT NULL,
     data_hash VARBINARY(32),
     consumed_by_tx_id BIGINT,

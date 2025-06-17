@@ -46,6 +46,7 @@ type Tx struct {
 	ValidContract    *bool   `gorm:"type:BOOLEAN"`
 	ScriptSize       *uint32 `gorm:"type:INT UNSIGNED"`
 	TreasuryDonation *int64  `gorm:"type:BIGINT"`
+	TotalCollateral  *int64  `gorm:"type:BIGINT"`
 
 	// Relationships
 	Block      Block        `gorm:"foreignKey:BlockHash;references:Hash"`
@@ -161,4 +162,16 @@ func (sl *SlotLeader) BeforeCreate(tx *gorm.DB) error {
 
 func (e *Epoch) BeforeCreate(tx *gorm.DB) error {
 	return nil
+}
+
+// RequiredSigner represents a required signer for a transaction (Alonzo+)
+type RequiredSigner struct {
+	ID          uint64 `gorm:"primaryKey;autoIncrement"`
+	TxHash      []byte `gorm:"type:VARBINARY(32);not null;uniqueIndex:idx_required_signers_unique,priority:1"`
+	SignerIndex uint32 `gorm:"type:INT UNSIGNED;not null;uniqueIndex:idx_required_signers_unique,priority:2"`
+	SignerHash  []byte `gorm:"type:VARBINARY(28);not null;index"`
+}
+
+func (RequiredSigner) TableName() string {
+	return "required_signers"
 }

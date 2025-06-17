@@ -11,6 +11,8 @@ import (
 	"nectar/models"
 	"nectar/processors"
 	"net"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -34,9 +36,23 @@ type Config struct {
 
 // DefaultConfig returns sensible defaults
 func DefaultConfig() Config {
+	// Get network magic from environment, default to mainnet
+	networkMagic := uint32(764824073) // Mainnet default
+	if envMagic := os.Getenv("CARDANO_NETWORK_MAGIC"); envMagic != "" {
+		if magic, err := strconv.ParseUint(envMagic, 10, 32); err == nil {
+			networkMagic = uint32(magic)
+		}
+	}
+	
+	// Get socket path from environment
+	socketPath := os.Getenv("CARDANO_NODE_SOCKET")
+	if socketPath == "" {
+		socketPath = "/opt/cardano/cnode/sockets/node.socket"
+	}
+	
 	return Config{
-		SocketPath:      "/opt/cardano/cnode/sockets/node.socket",
-		NetworkMagic:    764824073, // Mainnet
+		SocketPath:      socketPath,
+		NetworkMagic:    networkMagic,
 		QueryInterval:   5 * time.Minute,
 		MaxRetries:      3,
 		RetryBackoff:    30 * time.Second,

@@ -228,10 +228,19 @@ func (wp *WithdrawalProcessor) extractRewardAddressComponents(rewardAccountStr s
 	}
 
 	stakeKeyHash := rewardAddr.StakeKeyHash()
+	
+	// Extract network ID from address bytes
+	addrBytes, _ := rewardAddr.Bytes()
+	networkID := uint8(0) // Default to mainnet
+	if len(addrBytes) > 0 {
+		// Network ID is in the lower 4 bits of the first byte
+		networkID = addrBytes[0] & 0x0F
+	}
+	
 	components := &RewardAddressComponents{
 		Address:       rewardAccountStr,
 		StakeKeyHash:  &stakeKeyHash,
-		NetworkID:     uint8(0), // TODO: Extract network ID from address
+		NetworkID:     networkID,
 		AddressType:   rewardAddr.Type(),
 	}
 

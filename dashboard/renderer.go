@@ -211,6 +211,11 @@ func (dr *DashboardRenderer) renderPerformance(data *DashboardData) {
 		dr.currentFrame.WriteString(fmt.Sprintf("\033[38;5;99mTip: \033[38;5;226m%13d\033[38;5;99m | Behind: \033[38;5;226m%8d slots\033[38;5;99m | Status: %s%s\033[0m\n",
 			data.TipSlot, data.TipDistance, syncColor, syncStatus))
 	}
+	
+	// Parallel processing metrics
+	dr.currentFrame.WriteString(fmt.Sprintf("\033[38;5;99mWorkers: \033[38;5;226m%d/%d active\033[38;5;99m | Queue: \033[38;5;226m%4d blocks\033[38;5;99m | Mode: \033[38;5;82mASYNC BLOCKS\033[0m\n",
+		data.ActiveWorkers, data.TotalWorkers, data.QueueDepth))
+	
 	dr.currentFrame.WriteString("\n")
 }
 
@@ -317,6 +322,11 @@ type DashboardData struct {
 	// Tip tracking
 	TipSlot     uint64
 	TipDistance uint64
+	
+	// Parallel processing
+	QueueDepth    int
+	ActiveWorkers int32
+	TotalWorkers  int
 	
 	// Activities
 	Activities []ActivityData

@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  nectar:
+    build: .
+    container_name: nectar-indexer
+    environment:
+      # Database Configuration (Required)
+      - TIDB_DSN=${TIDB_DSN}
+      
+      # Cardano Network Configuration
+      - CARDANO_NETWORK_MAGIC=${CARDANO_NETWORK_MAGIC:-764824073}
+      - CARDANO_NODE_SOCKET=/node/socket/node.socket
+      
+      # Performance Tuning
+      - DB_CONNECTION_POOL=${DB_CONNECTION_POOL:-8}
+      - WORKER_COUNT=${WORKER_COUNT:-8}
+      - BULK_MODE_ENABLED=${BULK_MODE_ENABLED:-false}
+      - BULK_FETCH_RANGE_SIZE=${BULK_FETCH_RANGE_SIZE:-2000}
+      
+      # Monitoring
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
+      - METRICS_PORT=${METRICS_PORT:-9090}
+    volumes:
+      # Mount Cardano node socket
+      - ${CARDANO_NODE_SOCKET:-/opt/cardano/cnode/sockets/node.socket}:/node/socket/node.socket
+      # Persist logs
+      - ./logs:/app/logs
+    ports:
+      - "${METRICS_PORT:-9090}:9090"
+    restart: unless-stopped
+    networks:
+      - nectar-network
+    depends_on:
+      - tidb
+
+  tidb:
+    image: pingcap/tidb:latest
+    container_name: nectar-tidb
+    ports:
+      - "4000:4000"
+      - "10080:10080"
+    environment:
+      - TIDB_MEMORY_QUOTA_QUERY=17179869184  # 16GB
+    volumes:
+      - tidb-data:/tidb
+    networks:
+      - nectar-network
+    restart: unless-stopped
+
+  tikv:
+    image: pingcap/tikv:latest
+    container_name: nectar-tikv
+    ports:
+      - "20160:20160"
+    volumes:
+      - tikv-data:/tikv
+    networks:
+      - nectar-network
+    restart: unless-stopped
+    command: 
+      - --addr=0.0.0.0:20160
+      - --advertise-addr=tikv:20160
+      - --data-dir=/tikv
+      - --pd=pd:2379
+
+  pd:
+    image: pingcap/pd:latest
+    container_name: nectar-pd
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    volumes:
+      - pd-data:/pd
+    networks:
+      - nectar-network
+    restart: unless-stopped
+    command:
+      - --name=pd
+      - --client-urls=http://0.0.0.0:2379
+      - --peer-urls=http://0.0.0.0:2380
+      - --advertise-client-urls=http://pd:2379
+      - --advertise-peer-urls=http://pd:2380
+      - --data-dir=/pd
+
+volumes:
+  tidb-data:
+  tikv-data:
+  pd-data:
+
+networks:
+  nectar-network:
+    driver: bridge

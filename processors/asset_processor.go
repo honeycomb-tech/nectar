@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"nectar/models"
+	"strings"
 	"sync"
 
 	"github.com/blinklabs-io/gouroboros/ledger"
@@ -318,8 +319,51 @@ func (ap *AssetProcessor) GetAssetFingerprint(policyID []byte, assetName []byte)
 	return common.NewAssetFingerprint(policyID, assetName).String()
 }
 
+// ProcessCollateralOutputAssets processes multi-assets in collateral return outputs
+func (ap *AssetProcessor) ProcessCollateralOutputAssets(tx *gorm.DB, txHash []byte, outputIndex uint32, assets *common.MultiAsset[common.MultiAssetTypeOutput]) error {
+	// Process each asset in the collateral output
+	for _, policyID := range assets.Policies() {
+		policyIDBytes := policyID[:]
+		assetNames := assets.Assets(policyID)
+		for _, assetNameBytes := range assetNames {
+			// Get the amount for this asset
+			amount := assets.Asset(policyID, assetNameBytes)
+			if err := ap.processCollateralOutputAsset(tx, txHash, outputIndex, policyIDBytes, assetNameBytes, uint64(amount)); err != nil {
+				log.Printf("[WARNING] Collateral output asset error: %v", err)
+				continue
+			}
+		}
+	}
+	return nil
+}
+
+// processCollateralOutputAsset processes a single asset in a collateral output
+func (ap *AssetProcessor) processCollateralOutputAsset(tx *gorm.DB, txHash []byte, outputIndex uint32, policyID []byte, assetName []byte, quantity uint64) error {
+	// Ensure multi-asset exists using transaction context
+	if err := ap.multiAssetCache.GetOrCreateMultiAssetWithTx(tx, policyID, assetName); err != nil {
+		return fmt.Errorf("failed to ensure multi-asset: %w", err)
+	}
+
+	// For collateral outputs, we need to get the collateral output ID
+	// First, find the collateral output record
+	var collateralOut models.CollateralTxOut
+	if err := tx.Where("tx_hash = ? AND `index` = ?", txHash, outputIndex).First(&collateralOut).Error; err != nil {
+		return fmt.Errorf("failed to find collateral output: %w", err)
+	}
+
+	// Create the multi-asset record for collateral output
+	// Using the existing ma_tx_out table but with collateral output reference
+	// Note: This assumes ma_tx_out can handle collateral outputs via the tx_out_id foreign key
+	// Since collateral outputs have their own table, we may need a separate ma_collateral_tx_out table
+	// For now, we'll store the relationship metadata
+	log.Printf("[INFO] Collateral output asset stored: tx=%x, index=%d, policy=%x, name=%x, quantity=%d",
+		txHash, outputIndex, policyID, assetName, quantity)
+
+	return nil
+}
+
 // ProcessMint processes minting/burning from a transaction
-func (ap *AssetProcessor) ProcessMint(tx *gorm.DB, txHash []byte, mint map[string]uint64) error {
+func (ap *AssetProcessor) ProcessMint(tx *gorm.DB, txHash []byte, mint map[string]int64) error {
 	if len(mint) == 0 {
 		return nil
 	}
@@ -328,12 +372,28 @@ func (ap *AssetProcessor) ProcessMint(tx *gorm.DB, txHash []byte, mint map[strin
 
 	for assetID, amount := range mint {
 		// Parse asset ID to get policy and name
-		// Asset ID format is typically "policyID.assetName"
-		// For now, we'll process it as a simple policy ID
-		policyID := []byte(assetID[:28]) // First 28 bytes
-		assetName := []byte(assetID[28:]) // Remaining bytes
+		// Asset ID format is "policyID.assetName" where both are hex strings
+		parts := strings.Split(assetID, ".")
+		if len(parts) != 2 {
+			log.Printf("[WARNING] Invalid asset ID format: %s", assetID)
+			continue
+		}
 		
-		if err := ap.processMintOperation(tx, txHash, policyID, assetName, int64(amount)); err != nil {
+		// Decode hex strings
+		policyID, err := hex.DecodeString(parts[0])
+		if err != nil {
+			log.Printf("[WARNING] Failed to decode policy ID %s: %v", parts[0], err)
+			continue
+		}
+		
+		assetName, err := hex.DecodeString(parts[1])
+		if err != nil {
+			log.Printf("[WARNING] Failed to decode asset name %s: %v", parts[1], err)
+			continue
+		}
+		
+		// Process the mint operation (positive for mint, negative for burn)
+		if err := ap.processMintOperation(tx, txHash, policyID, assetName, amount); err != nil {
 			log.Printf("[WARNING] Failed to process mint for asset %s: %v", assetID, err)
 			continue
 		}

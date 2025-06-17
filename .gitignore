@@ -47,6 +47,9 @@ Thumbs.db
 *.swo
 *~
 
+# Claude-specific files
+.claude/
+
 # Docker volumes and data
 docker-data/
 data/

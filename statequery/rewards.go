@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"nectar/models"
+	"os"
+	"strconv"
 
 	"gorm.io/gorm"
 )
@@ -29,14 +31,36 @@ type RewardParameters struct {
 }
 
 // DefaultRewardParameters returns mainnet reward parameters
+// These can be overridden via environment variables
 func DefaultRewardParameters() RewardParameters {
-	return RewardParameters{
+	params := RewardParameters{
 		TreasuryTax:       0.20,                      // 20% to treasury
 		MonetaryExpansion: 0.003,                     // 0.3% per epoch
 		OptimalPoolCount:  500,                       // k=500
 		InfluenceFactor:   0.3,                       // a0=0.3
 		TotalSupply:       45_000_000_000_000_000,    // 45B ADA
 	}
+	
+	// Allow environment overrides for testing or different networks
+	if tax := os.Getenv("CARDANO_TREASURY_TAX"); tax != "" {
+		if val, err := strconv.ParseFloat(tax, 64); err == nil {
+			params.TreasuryTax = val
+		}
+	}
+	
+	if expansion := os.Getenv("CARDANO_MONETARY_EXPANSION"); expansion != "" {
+		if val, err := strconv.ParseFloat(expansion, 64); err == nil {
+			params.MonetaryExpansion = val
+		}
+	}
+	
+	if poolCount := os.Getenv("CARDANO_OPTIMAL_POOL_COUNT"); poolCount != "" {
+		if val, err := strconv.ParseUint(poolCount, 10, 32); err == nil {
+			params.OptimalPoolCount = uint32(val)
+		}
+	}
+	
+	return params
 }
 
 // NewRewardCalculator creates a new reward calculator

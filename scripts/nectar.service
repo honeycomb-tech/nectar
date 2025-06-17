@@ -1,0 +1,40 @@
+[Unit]
+Description=Nectar Cardano Blockchain Indexer
+Documentation=https://github.com/yourusername/nectar
+After=network.target cardano-node.service
+Wants=cardano-node.service
+
+[Service]
+Type=simple
+User=cardano
+Group=cardano
+WorkingDirectory=/opt/nectar
+
+# Environment file containing configuration
+EnvironmentFile=/etc/nectar/nectar.env
+
+# Start command
+ExecStart=/opt/nectar/nectar
+
+# Restart configuration
+Restart=always
+RestartSec=10
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nectar/logs
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nectar
+
+[Install]
+WantedBy=multi-user.target
