@@ -9,10 +9,10 @@ import (
 // MigrateFromOldSystems migrates from the old error collection systems to the unified one
 func MigrateFromOldSystems() {
 	log.Println(" Migrating to Unified Error System...")
-	
+
 	// Hook into standard log output to capture legacy log.Printf errors
 	installLogInterceptor()
-	
+
 	log.Println("[OK] Error system migration complete")
 }
 
@@ -29,24 +29,26 @@ func ParseLogMessage(logMsg string) (errorType ErrorType, component, operation, 
 	if idx := strings.Index(logMsg, "] "); idx != -1 {
 		cleanMsg = logMsg[idx+2:]
 	}
-	
+
 	// Detect error patterns
 	if strings.Contains(logMsg, "Error 1452") || strings.Contains(logMsg, "foreign key constraint") {
 		return ErrorTypeConstraint, "Database", "ForeignKey", cleanMsg, true
 	}
-	
+
 	if strings.Contains(logMsg, "Error 1062") || strings.Contains(logMsg, "Duplicate entry") {
-		return ErrorTypeConstraint, "Database", "DuplicateKey", cleanMsg, true
+		// Duplicate key errors are not real errors - they happen during normal operation
+		// when multiple workers try to insert the same block
+		return "", "", "", "", false
 	}
-	
+
 	if strings.Contains(logMsg, "SLOW SQL") || strings.Contains(logMsg, "slow query") {
 		return ErrorTypeSlow, "Database", "SlowQuery", cleanMsg, true
 	}
-	
+
 	if strings.Contains(logMsg, "failed to process") {
 		return ErrorTypeProcessing, "Processor", "ProcessBlock", cleanMsg, true
 	}
-	
+
 	if strings.Contains(logMsg, "Warning:") || strings.Contains(logMsg, "[WARNING]") {
 		// Extract component and operation from warning
 		if strings.Contains(logMsg, "failed to find existing transaction") {
@@ -57,12 +59,12 @@ func ParseLogMessage(logMsg string) (errorType ErrorType, component, operation, 
 		}
 		return ErrorTypeWarning, "General", "Warning", cleanMsg, true
 	}
-	
+
 	if strings.Contains(logMsg, "Error:") || strings.Contains(logMsg, "[ERROR]") || strings.Contains(logMsg, "failed") {
 		// Extract component from error context
 		component = "General"
 		operation = "Error"
-		
+
 		if strings.Contains(logMsg, "BlockFetch") {
 			component = "BlockFetch"
 			operation = "Fetch"
@@ -79,26 +81,26 @@ func ParseLogMessage(logMsg string) (errorType ErrorType, component, operation, 
 			component = "Block"
 			operation = "Process"
 		}
-		
+
 		return ErrorTypeProcessing, component, operation, cleanMsg, true
 	}
-	
+
 	if strings.Contains(logMsg, "constraint") {
 		return ErrorTypeConstraint, "Database", "Constraint", cleanMsg, true
 	}
-	
+
 	if strings.Contains(logMsg, "deadlock") {
 		return ErrorTypeDatabase, "Database", "Deadlock", cleanMsg, true
 	}
-	
+
 	if strings.Contains(logMsg, "connection refused") || strings.Contains(logMsg, "connection reset") {
 		return ErrorTypeNetwork, "Network", "Connection", cleanMsg, true
 	}
-	
+
 	if strings.Contains(logMsg, "timeout") {
 		return ErrorTypeNetwork, "Network", "Timeout", cleanMsg, true
 	}
-	
+
 	return "", "", "", "", false
 }
 
@@ -107,10 +109,10 @@ func ConvertProcessorError(component, operation string, err error) {
 	if err == nil {
 		return
 	}
-	
+
 	ues := Get()
 	errStr := err.Error()
-	
+
 	// Categorize based on error content
 	switch {
 	case strings.Contains(errStr, "foreign key"):
@@ -135,10 +137,10 @@ func WrapError(component, operation string, err error) error {
 	if err == nil {
 		return nil
 	}
-	
+
 	// Log to unified system
 	ConvertProcessorError(component, operation, err)
-	
+
 	// Return wrapped error
 	return fmt.Errorf("%s.%s: %w", component, operation, err)
 }

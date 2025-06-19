@@ -31,47 +31,47 @@ const (
 
 // UnifiedError represents a single error with full context
 type UnifiedError struct {
-	ID          string
-	Timestamp   time.Time
-	Type        ErrorType
-	Component   string
-	Operation   string
-	Message     string
-	Details     string
-	StackTrace  string
-	Count       int64
-	FirstSeen   time.Time
-	LastSeen    time.Time
+	ID         string
+	Timestamp  time.Time
+	Type       ErrorType
+	Component  string
+	Operation  string
+	Message    string
+	Details    string
+	StackTrace string
+	Count      int64
+	FirstSeen  time.Time
+	LastSeen   time.Time
 }
 
 // UnifiedErrorSystem is the single source of truth for all errors
 type UnifiedErrorSystem struct {
 	// Core storage
-	errors      map[string]*UnifiedError // Deduplicated by signature
-	errorList   []*UnifiedError          // Ordered list for dashboard
-	mutex       sync.RWMutex
-	
+	errors    map[string]*UnifiedError // Deduplicated by signature
+	errorList []*UnifiedError          // Ordered list for dashboard
+	mutex     sync.RWMutex
+
 	// Statistics
-	totalErrors      atomic.Int64
-	errorsByType     map[ErrorType]*atomic.Int64
-	recentErrorRate  atomic.Int64 // Errors in last minute
-	
+	totalErrors     atomic.Int64
+	errorsByType    map[ErrorType]*atomic.Int64
+	recentErrorRate atomic.Int64 // Errors in last minute
+
 	// Dashboard callback
 	dashboardFunc    func(errorType, message string)
 	dashboardEnabled atomic.Bool
-	
+
 	// Persistence
 	logFile         *os.File
 	persistencePath string
-	
+
 	// Configuration
-	maxErrors       int
-	maxListSize     int
-	flushInterval   time.Duration
-	
+	maxErrors     int
+	maxListSize   int
+	flushInterval time.Duration
+
 	// Metrics
-	lastFlush       time.Time
-	lastRateCalc    time.Time
+	lastFlush    time.Time
+	lastRateCalc time.Time
 }
 
 var (
@@ -86,13 +86,13 @@ func Initialize(dashboardFunc func(errorType, message string)) *UnifiedErrorSyst
 			errors:          make(map[string]*UnifiedError),
 			errorList:       make([]*UnifiedError, 0, 1000),
 			errorsByType:    make(map[ErrorType]*atomic.Int64),
-			maxErrors:       10000,      // Keep up to 10k unique errors
-			maxListSize:     1000,       // Dashboard shows last 1k errors
+			maxErrors:       10000, // Keep up to 10k unique errors
+			maxListSize:     1000,  // Dashboard shows last 1k errors
 			flushInterval:   5 * time.Minute,
 			persistencePath: "unified_errors.log",
 			dashboardFunc:   dashboardFunc,
 		}
-		
+
 		// Initialize error type counters
 		for _, errType := range []ErrorType{
 			ErrorTypeDatabase, ErrorTypeNetwork, ErrorTypeProcessing,
@@ -102,16 +102,16 @@ func Initialize(dashboardFunc func(errorType, message string)) *UnifiedErrorSyst
 		} {
 			globalUnifiedSystem.errorsByType[errType] = &atomic.Int64{}
 		}
-		
+
 		globalUnifiedSystem.dashboardEnabled.Store(true)
 		globalUnifiedSystem.initializePersistence()
-		
+
 		// Start background tasks
 		go globalUnifiedSystem.backgroundMaintenance()
-		
+
 		log.Println("[OK] Unified Error System initialized")
 	})
-	
+
 	return globalUnifiedSystem
 }
 
@@ -133,32 +133,65 @@ func (ues *UnifiedErrorSystem) SetDashboardCallback(dashboardFunc func(errorType
 
 // LogError logs an error with full context - main entry point for all errors
 func (ues *UnifiedErrorSystem) LogError(errType ErrorType, component, operation, message string, details ...string) {
+	// Add source tracking for debugging
+	source := "unknown"
+	if component == "GORM" || strings.HasPrefix(component, "GORM.") {
+		source = "gorm-logger"
+	} else if component == "MySQL" {
+		source = "mysql-driver"  
+	} else if strings.Contains(component, "Processor") {
+		source = "processor"
+	} else if component == "MetadataFetcher" {
+		source = "metadata"
+	}
+	
+	// Filter out non-critical errors that shouldn't be tracked
+	if ues.shouldFilterError(errType, component, operation, message) {
+		// Log filtering for debugging (only in debug mode)
+		if os.Getenv("DEBUG_ERROR_FILTERING") == "true" {
+			log.Printf("[DEBUG] Filtered error from %s: %s - %s", source, component, message)
+		}
+		return
+	}
+	
+	// Double-check filtering for any remaining duplicate key errors
+	// This ensures they never make it into the error system
+	if strings.Contains(message, "Error 1062") || strings.Contains(message, "Duplicate entry") {
+		if os.Getenv("DEBUG_ERROR_FILTERING") == "true" {
+			log.Printf("[DEBUG] Filtered duplicate key from %s: %s", source, message)
+		}
+		return
+	}
+	
 	// Create error signature for deduplication
 	signature := fmt.Sprintf("%s:%s:%s:%s", errType, component, operation, message)
-	
+
 	// Capture stack trace for new errors
 	stackTrace := ""
 	if len(details) == 0 || !strings.Contains(details[0], "stack:") {
 		stackTrace = ues.captureStackTrace(3) // Skip LogError, captureStackTrace, and caller
 	}
-	
+
 	detailStr := strings.Join(details, " ")
-	
+
 	ues.mutex.Lock()
 	defer ues.mutex.Unlock()
-	
+
 	now := time.Now()
-	
+	isNewError := false
+
 	// Check if error already exists
 	if existing, exists := ues.errors[signature]; exists {
 		existing.Count++
 		existing.LastSeen = now
-		
+
 		// Update details if new information provided
 		if detailStr != "" && existing.Details != detailStr {
 			existing.Details = detailStr
 		}
 	} else {
+		isNewError = true
+		
 		// Create new error
 		err := &UnifiedError{
 			ID:         fmt.Sprintf("%d", now.UnixNano()),
@@ -173,30 +206,31 @@ func (ues *UnifiedErrorSystem) LogError(errType ErrorType, component, operation,
 			FirstSeen:  now,
 			LastSeen:   now,
 		}
-		
+
 		// Add to map
 		ues.errors[signature] = err
-		
+
 		// Add to list for dashboard (maintain max size)
 		ues.errorList = append(ues.errorList, err)
 		if len(ues.errorList) > ues.maxListSize {
 			ues.errorList = ues.errorList[1:]
 		}
-		
+
 		// Clean up if too many unique errors
 		if len(ues.errors) > ues.maxErrors {
 			ues.cleanupOldErrors()
 		}
 	}
-	
+
 	// Update statistics
 	ues.totalErrors.Add(1)
 	if counter, ok := ues.errorsByType[errType]; ok {
 		counter.Add(1)
 	}
-	
-	// Forward to dashboard if enabled
-	if ues.dashboardEnabled.Load() && ues.dashboardFunc != nil {
+
+	// Forward to dashboard if enabled AND it's a new error (not just incrementing count)
+	// This prevents dashboard spam from repeated errors
+	if ues.dashboardEnabled.Load() && ues.dashboardFunc != nil && isNewError {
 		// Format message for dashboard
 		dashboardMsg := fmt.Sprintf("%s.%s: %s", component, operation, message)
 		if detailStr != "" {
@@ -204,7 +238,7 @@ func (ues *UnifiedErrorSystem) LogError(errType ErrorType, component, operation,
 		}
 		ues.dashboardFunc(string(errType), dashboardMsg)
 	}
-	
+
 	// Log to file for analysis
 	ues.logToFile(errType, component, operation, message, detailStr)
 }
@@ -243,28 +277,28 @@ func (ues *UnifiedErrorSystem) Warning(component, operation, message string) {
 func (ues *UnifiedErrorSystem) captureStackTrace(skip int) string {
 	const maxDepth = 10
 	var builder strings.Builder
-	
+
 	for i := skip; i < skip+maxDepth; i++ {
 		pc, file, line, ok := runtime.Caller(i)
 		if !ok {
 			break
 		}
-		
+
 		fn := runtime.FuncForPC(pc)
 		if fn == nil {
 			continue
 		}
-		
+
 		// Skip runtime and system functions
 		fnName := fn.Name()
 		if strings.Contains(fnName, "runtime.") {
 			continue
 		}
-		
+
 		// Format: function (file:line)
 		builder.WriteString(fmt.Sprintf("  %s (%s:%d)\n", fnName, file, line))
 	}
-	
+
 	return builder.String()
 }
 
@@ -272,17 +306,22 @@ func (ues *UnifiedErrorSystem) captureStackTrace(skip int) string {
 func (ues *UnifiedErrorSystem) GetRecentErrors(minutes int) []*UnifiedError {
 	ues.mutex.RLock()
 	defer ues.mutex.RUnlock()
-	
+
 	cutoff := time.Now().Add(-time.Duration(minutes) * time.Minute)
 	recent := make([]*UnifiedError, 0)
-	
+
 	// Return from the ordered list (most recent errors)
 	for i := len(ues.errorList) - 1; i >= 0; i-- {
 		if ues.errorList[i].LastSeen.After(cutoff) {
+			// Final filter - never return duplicate key errors to dashboard
+			if strings.Contains(ues.errorList[i].Message, "Error 1062") || 
+			   strings.Contains(ues.errorList[i].Message, "Duplicate entry") {
+				continue
+			}
 			recent = append(recent, ues.errorList[i])
 		}
 	}
-	
+
 	return recent
 }
 
@@ -290,14 +329,19 @@ func (ues *UnifiedErrorSystem) GetRecentErrors(minutes int) []*UnifiedError {
 func (ues *UnifiedErrorSystem) GetErrorsByType(errType ErrorType) []*UnifiedError {
 	ues.mutex.RLock()
 	defer ues.mutex.RUnlock()
-	
+
 	errors := make([]*UnifiedError, 0)
 	for _, err := range ues.errorList {
 		if err.Type == errType {
+			// Final filter - never return duplicate key errors
+			if strings.Contains(err.Message, "Error 1062") || 
+			   strings.Contains(err.Message, "Duplicate entry") {
+				continue
+			}
 			errors = append(errors, err)
 		}
 	}
-	
+
 	return errors
 }
 
@@ -305,25 +349,25 @@ func (ues *UnifiedErrorSystem) GetErrorsByType(errType ErrorType) []*UnifiedErro
 func (ues *UnifiedErrorSystem) GetStatistics() map[string]interface{} {
 	ues.mutex.RLock()
 	defer ues.mutex.RUnlock()
-	
+
 	stats := make(map[string]interface{})
 	stats["total_errors"] = ues.totalErrors.Load()
 	stats["unique_errors"] = len(ues.errors)
 	stats["recent_errors"] = len(ues.errorList)
-	
+
 	// Error counts by type
 	typeCounts := make(map[string]int64)
 	for errType, counter := range ues.errorsByType {
 		typeCounts[string(errType)] = counter.Load()
 	}
 	stats["by_type"] = typeCounts
-	
+
 	// Calculate error rate (errors per minute)
 	now := time.Now()
 	if ues.lastRateCalc.IsZero() {
 		ues.lastRateCalc = now
 	}
-	
+
 	timeDiff := now.Sub(ues.lastRateCalc).Minutes()
 	if timeDiff > 0 {
 		recentCount := ues.recentErrorRate.Load()
@@ -331,7 +375,7 @@ func (ues *UnifiedErrorSystem) GetStatistics() map[string]interface{} {
 		ues.recentErrorRate.Store(0)
 		ues.lastRateCalc = now
 	}
-	
+
 	return stats
 }
 
@@ -342,33 +386,33 @@ func (ues *UnifiedErrorSystem) cleanupOldErrors() {
 	if toRemove < 1 {
 		toRemove = 1
 	}
-	
+
 	// Sort by last seen and remove oldest
 	type errorAge struct {
 		signature string
 		lastSeen  time.Time
 	}
-	
+
 	ages := make([]errorAge, 0, len(ues.errors))
 	for sig, err := range ues.errors {
 		ages = append(ages, errorAge{sig, err.LastSeen})
 	}
-	
+
 	// Simple selection of oldest errors
 	for i := 0; i < toRemove && i < len(ages); i++ {
 		var oldestIdx int
 		oldestTime := ages[0].lastSeen
-		
+
 		for j := 1; j < len(ages); j++ {
 			if ages[j].lastSeen.Before(oldestTime) {
 				oldestIdx = j
 				oldestTime = ages[j].lastSeen
 			}
 		}
-		
+
 		// Remove from map
 		delete(ues.errors, ages[oldestIdx].signature)
-		
+
 		// Remove from slice
 		ages[oldestIdx] = ages[len(ages)-1]
 		ages = ages[:len(ages)-1]
@@ -389,14 +433,14 @@ func (ues *UnifiedErrorSystem) logToFile(errType ErrorType, component, operation
 	if ues.logFile == nil {
 		return
 	}
-	
+
 	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
 	logEntry := fmt.Sprintf("[%s] %s | %s.%s | %s", timestamp, errType, component, operation, message)
 	if details != "" {
 		logEntry += " | " + details
 	}
 	logEntry += "\n"
-	
+
 	ues.logFile.WriteString(logEntry)
 }
 
@@ -404,27 +448,79 @@ func (ues *UnifiedErrorSystem) logToFile(errType ErrorType, component, operation
 func (ues *UnifiedErrorSystem) backgroundMaintenance() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		// Update error rate
 		ues.recentErrorRate.Add(1)
-		
+
 		// Flush log file
 		if ues.logFile != nil {
 			ues.logFile.Sync()
 		}
-		
+
 		// Clean up old errors if needed
 		ues.mutex.RLock()
 		errorCount := len(ues.errors)
 		ues.mutex.RUnlock()
-		
+
 		if errorCount > ues.maxErrors*9/10 {
 			ues.mutex.Lock()
 			ues.cleanupOldErrors()
 			ues.mutex.Unlock()
 		}
 	}
+}
+
+// shouldFilterError determines if an error should be filtered out
+func (ues *UnifiedErrorSystem) shouldFilterError(errType ErrorType, component, operation, message string) bool {
+	// Filter duplicate key errors - they're normal during parallel processing
+	if strings.Contains(message, "Error 1062") || 
+	   strings.Contains(message, "Duplicate entry") ||
+	   strings.Contains(message, "duplicate key") {
+		return true
+	}
+	
+	// Filter "already processed" messages
+	if strings.Contains(message, "already processed") {
+		return true
+	}
+	
+	// Filter expected constraint violations during parallel inserts
+	if errType == ErrorTypeConstraint && operation == "DuplicateKey" {
+		return true
+	}
+	
+	// Filter repetitive transaction isolation errors
+	if strings.Contains(message, "Error 1568") || 
+	   strings.Contains(message, "Transaction characteristics can't be changed") {
+		return true
+	}
+	
+	// Filter connection reset errors that are recovered automatically
+	if strings.Contains(message, "connection reset by peer") && 
+	   errType == ErrorTypeDatabase {
+		return true
+	}
+	
+	return false
+}
+
+// ClearErrors clears all accumulated errors (useful on startup)
+func (ues *UnifiedErrorSystem) ClearErrors() {
+	ues.mutex.Lock()
+	defer ues.mutex.Unlock()
+	
+	// Clear maps
+	ues.errors = make(map[string]*UnifiedError)
+	ues.errorList = make([]*UnifiedError, 0, ues.maxListSize)
+	
+	// Reset counters
+	ues.totalErrors.Store(0)
+	for _, counter := range ues.errorsByType {
+		counter.Store(0)
+	}
+	
+	log.Println("[INFO] Cleared all error statistics")
 }
 
 // Close cleanly shuts down the error system

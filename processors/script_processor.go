@@ -5,13 +5,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	unifiederrors "nectar/errors"
 	"nectar/models"
 	"sync"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
-	"gorm.io/gorm"
 	"golang.org/x/crypto/blake2b"
+	"gorm.io/gorm"
 )
 
 // ScriptProcessor handles processing scripts for Alonzo era and beyond
@@ -40,7 +41,7 @@ func NewScriptCache(db *gorm.DB) *ScriptCache {
 // EnsureScript ensures a script exists
 func (sc *ScriptCache) EnsureScript(tx *gorm.DB, txHash []byte, scriptHash []byte, scriptType string, scriptBytes []byte, scriptJson *string) error {
 	hashHex := hex.EncodeToString(scriptHash)
-	
+
 	// Check cache first
 	sc.mutex.RLock()
 	if exists := sc.cache[hashHex]; exists {
@@ -102,11 +103,11 @@ func (sp *ScriptProcessor) ProcessInlineDatums(ctx context.Context, tx *gorm.DB,
 			}
 		}
 	}
-	
+
 	if len(outputs) == 0 {
 		return nil
 	}
-	
+
 	// Process each output for inline datums
 	for _, output := range outputs {
 		// Check if output has Datum() method
@@ -118,15 +119,15 @@ func (sp *ScriptProcessor) ProcessInlineDatums(ctx context.Context, tx *gorm.DB,
 				h, _ := blake2b.New256(nil)
 				h.Write(datumBytes)
 				datumHash := h.Sum(nil)
-				
+
 				// Store the datum using the cache
 				if err := sp.datumCache.EnsureDatum(tx, txHash, datumHash, datumBytes); err != nil {
-					log.Printf("[WARNING] Failed to store inline datum: %v", err)
+					unifiederrors.Get().Warning("ScriptProcessor", "StoreInlineDatum", fmt.Sprintf("Failed to store inline datum: %v", err))
 				}
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -148,7 +149,7 @@ func NewDatumCache(db *gorm.DB) *DatumCache {
 // EnsureDatum ensures a datum exists
 func (dc *DatumCache) EnsureDatum(tx *gorm.DB, txHash []byte, datumHash []byte, datumBytes []byte) error {
 	hashHex := hex.EncodeToString(datumHash)
-	
+
 	// Check cache first
 	dc.mutex.RLock()
 	if exists := dc.cache[hashHex]; exists {
@@ -244,11 +245,11 @@ func (sp *ScriptProcessor) ProcessNativeScripts(ctx context.Context, tx *gorm.DB
 	switch ws := witnessSet.(type) {
 	case interface{ NativeScripts() []common.NativeScript }:
 		scripts := ws.NativeScripts()
-		
+
 		if len(scripts) > 0 {
 			log.Printf("Processing %d native scripts for tx_hash=%x", len(scripts), txHash)
 		}
-		
+
 		for i, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "native", nil); err != nil {
 				log.Printf("Warning: failed to process native script %d: %v", i+1, err)
@@ -266,7 +267,7 @@ func (sp *ScriptProcessor) ProcessPlutusV1Scripts(ctx context.Context, tx *gorm.
 		scripts := ws.PlutusV1Scripts()
 		for _, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "plutus_v1", nil); err != nil {
-				log.Printf("[WARNING] Failed to process PlutusV1 script: %v", err)
+				unifiederrors.Get().Warning("ScriptProcessor", "ProcessPlutusV1", fmt.Sprintf("Failed to process PlutusV1 script: %v", err))
 				continue
 			}
 		}
@@ -281,7 +282,7 @@ func (sp *ScriptProcessor) ProcessPlutusV2Scripts(ctx context.Context, tx *gorm.
 		scripts := ws.PlutusV2Scripts()
 		for _, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "plutus_v2", nil); err != nil {
-				log.Printf("[WARNING] Failed to process PlutusV2 script: %v", err)
+				unifiederrors.Get().Warning("ScriptProcessor", "ProcessPlutusV2", fmt.Sprintf("Failed to process PlutusV2 script: %v", err))
 				continue
 			}
 		}
@@ -363,12 +364,14 @@ func (sp *ScriptProcessor) processScript(tx *gorm.DB, txHash []byte, script inte
 // ProcessRedeemers processes redeemers from a transaction
 func (sp *ScriptProcessor) ProcessRedeemers(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
 	switch ws := witnessSet.(type) {
-	case interface{ Redeemers() common.TransactionWitnessRedeemers }:
+	case interface {
+		Redeemers() common.TransactionWitnessRedeemers
+	}:
 		redeemers := ws.Redeemers()
 		if redeemers == nil {
 			return nil // No redeemers (e.g., in Shelley era)
 		}
-		
+
 		// Process redeemers for each tag type
 		for _, tag := range []common.RedeemerTag{
 			common.RedeemerTagSpend,
@@ -394,7 +397,7 @@ func (sp *ScriptProcessor) ProcessRedeemers(ctx context.Context, tx *gorm.DB, tx
 func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txHash []byte, tag common.RedeemerTag, index uint, redeemers common.TransactionWitnessRedeemers) error {
 	// Get redeemer data and execution units
 	data, exUnits := redeemers.Value(index, tag)
-	
+
 	// Convert tag to purpose string
 	var purpose string
 	switch tag {
@@ -447,7 +450,7 @@ func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txHash []by
 		Purpose:          purpose,
 		Index:            uint32(index),
 		RedeemerDataHash: dataHash,
-		ScriptHash:       nil,     // Would need to be linked to actual script
+		ScriptHash:       nil, // Would need to be linked to actual script
 		UnitMem:          exUnits.Memory,
 		UnitSteps:        exUnits.Steps,
 		Fee:              nil, // Fee calculation would require protocol parameters
@@ -465,7 +468,7 @@ func (sp *ScriptProcessor) processRedeemerByTagAndIndex(tx *gorm.DB, txHash []by
 func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txHash []byte, index int, redeemer interface{}) error {
 	// Extract redeemer data
 	var redeemerData []byte
-	var purpose string = "spend" // Default to most common purpose
+	var purpose string = "spend"             // Default to most common purpose
 	var redeemerIndex uint32 = uint32(index) // Default to passed index
 
 	// Try to extract redeemer data
@@ -499,9 +502,9 @@ func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txHash []byte, index int
 	}
 
 	// Extract execution units from redeemer
-	var unitMem uint64 = 1000000  // Default values
+	var unitMem uint64 = 1000000 // Default values
 	var unitSteps uint64 = 500000
-	
+
 	// Note: Execution units extraction depends on the redeemer type
 	// The interface{} doesn't guarantee the ExUnits method exists
 	// Keep default values for now
@@ -537,7 +540,7 @@ func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txHash []byte, index int
 		Purpose:          purpose,
 		Index:            redeemerIndex,
 		RedeemerDataHash: dataHash,
-		ScriptHash:       nil,     // Would need to be linked to actual script
+		ScriptHash:       nil, // Would need to be linked to actual script
 		UnitMem:          unitMem,
 		UnitSteps:        unitSteps,
 		Fee:              nil, // Fee calculation would require protocol parameters
@@ -622,25 +625,25 @@ func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transa
 	case interface{ Witnesses() interface{} }:
 		witnessSet = txWithWitness.Witnesses()
 	}
-	
+
 	if witnessSet != nil {
 		// Process scripts
 		if err := sp.ProcessTransactionScripts(context.Background(), tx, txHash, witnessSet); err != nil {
 			return fmt.Errorf("failed to process scripts: %w", err)
 		}
-		
+
 		// Process redeemers
 		if err := sp.ProcessRedeemers(context.Background(), tx, txHash, witnessSet); err != nil {
 			return fmt.Errorf("failed to process redeemers: %w", err)
 		}
 	}
-	
+
 	// Process inline datums from outputs (Babbage+)
 	if blockType >= 6 { // BlockTypeBabbage
 		if err := sp.ProcessInlineDatums(context.Background(), tx, txHash, transaction); err != nil {
 			return fmt.Errorf("failed to process inline datums: %w", err)
 		}
 	}
-	
+
 	return nil
 }

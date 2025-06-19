@@ -56,12 +56,12 @@ func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx 
 
 		// Handle different metadata formats
 		var metadata map[uint64]interface{}
-		
+
 		switch v := decodedValue.(type) {
 		case map[uint64]interface{}:
 			// Standard format for Shelley+ eras
 			metadata = v
-			
+
 		case map[interface{}]interface{}:
 			// Alternative format - convert keys to uint64
 			metadata = make(map[uint64]interface{})
@@ -86,11 +86,11 @@ func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx 
 					metadata[hash] = val
 				}
 			}
-			
+
 		case []interface{}:
 			// Byron might store metadata as array - wrap in map
 			metadata = map[uint64]interface{}{0: v}
-			
+
 		default:
 			// Any other format - wrap in map with key 0
 			if decodedValue != nil {
@@ -127,9 +127,6 @@ func (mp *MetadataProcessor) ProcessTransactionMetadata(ctx context.Context, tx 
 		return nil
 	}
 }
-
-
-
 
 // processMetadataEntry processes a single metadata entry
 func (mp *MetadataProcessor) processMetadataEntry(tx *gorm.DB, txHash []byte, key uint64, value interface{}) error {
@@ -175,9 +172,6 @@ func (mp *MetadataProcessor) processMetadataEntry(tx *gorm.DB, txHash []byte, ke
 	log.Printf("[OK] Processed metadata entry: tx_hash=%x, key=%d", txHash, key)
 	return nil
 }
-
-
-
 
 // processScript processes a single script
 func (mp *MetadataProcessor) processScript(tx *gorm.DB, txHash []byte, script interface{}, scriptType string) error {
@@ -355,7 +349,7 @@ func (mp *MetadataProcessor) ProcessMetadata(tx *gorm.DB, txHash []byte, metadat
 	if metadata == nil {
 		return nil
 	}
-	
+
 	// Decode the CBOR lazy value to get the actual metadata
 	decodedValue := metadata.Value()
 	if decodedValue == nil {
@@ -369,15 +363,15 @@ func (mp *MetadataProcessor) ProcessMetadata(tx *gorm.DB, txHash []byte, metadat
 		}
 		decodedValue = decoded
 	}
-	
+
 	// Handle different metadata formats
 	var metadataMap map[uint64]interface{}
-	
+
 	switch v := decodedValue.(type) {
 	case map[uint64]interface{}:
 		// Standard format for Shelley+ eras
 		metadataMap = v
-		
+
 	case map[interface{}]interface{}:
 		// Alternative format - convert keys to uint64
 		metadataMap = make(map[uint64]interface{})
@@ -402,24 +396,24 @@ func (mp *MetadataProcessor) ProcessMetadata(tx *gorm.DB, txHash []byte, metadat
 				metadataMap[hash] = val
 			}
 		}
-		
+
 	case []interface{}:
 		// Byron might store metadata as array - wrap in map
 		metadataMap = map[uint64]interface{}{0: v}
-		
+
 	default:
 		// Any other format - wrap in map with key 0
 		if decodedValue != nil {
 			metadataMap = map[uint64]interface{}{0: decodedValue}
 		}
 	}
-	
+
 	if len(metadataMap) == 0 {
 		return nil
 	}
-	
+
 	log.Printf("Processing %d metadata entries for transaction %x", len(metadataMap), txHash)
-	
+
 	for key, value := range metadataMap {
 		if err := mp.processMetadataEntry(tx, txHash, key, value); err != nil {
 			mp.errorCollector.ProcessingWarning("MetadataProcessor", "processMetadataEntry",
@@ -427,6 +421,6 @@ func (mp *MetadataProcessor) ProcessMetadata(tx *gorm.DB, txHash []byte, metadat
 				fmt.Sprintf("tx_hash:%x, key:%d", txHash, key))
 		}
 	}
-	
+
 	return nil
 }

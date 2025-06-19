@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,16 +36,16 @@ import (
 // Configuration defaults - can be overridden via environment variables
 var (
 	// Parallel processing - balanced with TiDB cluster needs
-	DB_CONNECTION_POOL    = getIntEnv("DB_CONNECTION_POOL", 8)
-	WORKER_COUNT         = getIntEnv("WORKER_COUNT", 8)
-	
+	DB_CONNECTION_POOL = getIntEnv("DB_CONNECTION_POOL", 8)
+	WORKER_COUNT       = getIntEnv("WORKER_COUNT", 8)
+
 	// Timing
 	STATS_INTERVAL        = getDurationEnv("STATS_INTERVAL", 3*time.Second)
 	BLOCKFETCH_TIMEOUT    = getDurationEnv("BLOCKFETCH_TIMEOUT", 30*time.Second)
 	BULK_FETCH_RANGE_SIZE = getIntEnv("BULK_FETCH_RANGE_SIZE", 2000)
-	
+
 	// Bulk mode
-	BULK_MODE_ENABLED     = getBoolEnv("BULK_MODE_ENABLED", false)
+	BULK_MODE_ENABLED = getBoolEnv("BULK_MODE_ENABLED", false)
 )
 
 var (
@@ -116,7 +118,7 @@ func NewSmartSocketDetector() *SmartSocketDetector {
 			"/opt/cardano/cnode/sockets/node.socket",
 			"/var/cardano/node.socket",
 			"/run/cardano/node.socket",
-			
+
 			// Development/test paths
 			"/tmp/node.socket",
 			DefaultCardanoNodeSocket,
@@ -127,8 +129,9 @@ func NewSmartSocketDetector() *SmartSocketDetector {
 
 // DetectCardanoSocket finds the first working Cardano node socket
 func (ssd *SmartSocketDetector) DetectCardanoSocket() (string, error) {
-	log.Println("Smart socket detection starting...")
-
+	// Note: Can't use dashboard logging here as indexer doesn't exist yet
+	// These logs will be captured by DashboardLogWriter once it's set up
+	
 	var workingSocket string
 	var connectionErrors []string
 
@@ -136,8 +139,6 @@ func (ssd *SmartSocketDetector) DetectCardanoSocket() (string, error) {
 		if path == "" {
 			continue // Skip empty environment variable
 		}
-
-		log.Printf("Checking socket: %s", path)
 
 		// Check if socket file exists
 		if !ssd.socketExists(path) {
@@ -148,7 +149,6 @@ func (ssd *SmartSocketDetector) DetectCardanoSocket() (string, error) {
 		// Test actual connectivity
 		if ssd.testConnectivity(path) {
 			workingSocket = path
-			log.Printf("Found working socket: %s", path)
 			break
 		} else {
 			connectionErrors = append(connectionErrors, fmt.Sprintf("%s: connection failed", path))
@@ -203,9 +203,9 @@ type ActivityEntry struct {
 }
 
 type ActivityFeed struct {
-	entries []ActivityEntry
-	mutex   sync.RWMutex
-	maxSize int
+	entries     []ActivityEntry
+	mutex       sync.RWMutex
+	maxSize     int
 	lastMessage string // For deduplication
 }
 
@@ -213,7 +213,8 @@ type ActivityFeed struct {
 type ReferenceAlignedIndexer struct {
 	// Core components - sequential processing
 	dbConnections   []*processors.BlockProcessor
-	processorIndex  uint64  // For round-robin connection selection
+	connPoolManager *database.ConnectionPoolManager
+	processorIndex  uint64 // For round-robin connection selection
 	ctx             context.Context
 	cancel          context.CancelFunc
 
@@ -236,6 +237,7 @@ type ReferenceAlignedIndexer struct {
 
 	// Dashboard control
 	dashboardEnabled atomic.Bool
+	dashboardRunning atomic.Bool
 
 	// Tip tracking
 	tipSlot         atomic.Uint64
@@ -249,14 +251,14 @@ type ReferenceAlignedIndexer struct {
 
 	// State query service for ledger state data
 	stateQueryService *statequery.Service
-	
-	// Dashboard renderer for smooth animations
-	dashboardRenderer *dashboard.DashboardRenderer
-	
+
+	// Dashboard interface - supports multiple dashboard types
+	dashboard dashboard.Dashboard
+
 	// Sync mode tracking
 	isBulkSync      atomic.Bool
 	bulkSyncEndSlot uint64
-	
+
 	// Async block processing
 	blockQueue    chan blockQueueItem
 	blockWorkers  int
@@ -284,13 +286,13 @@ type PerformanceStats struct {
 	byronFastPathUsed     int64
 	totalMemoryOps        int64
 	mutex                 sync.RWMutex
-	
+
 	// Cached display values - updated every 2 seconds
-	cachedBlockCount      int64
-	cachedSlot            uint64
-	cachedTxCount         int64
-	cachedTipSlot         uint64
-	cachedTipDistance     uint64
+	cachedBlockCount  int64
+	cachedSlot        uint64
+	cachedTxCount     int64
+	cachedTipSlot     uint64
+	cachedTipDistance uint64
 }
 
 // Custom log writer that captures logs for dashboard
@@ -298,15 +300,51 @@ type DashboardLogWriter struct {
 	indexer *ReferenceAlignedIndexer
 }
 
+// logToActivity is a helper function to route logs through the dashboard system
+func (rai *ReferenceAlignedIndexer) logToActivity(activityType, message string) {
+	// If dashboard is disabled, fall back to regular logging
+	if !rai.dashboardEnabled.Load() {
+		// Only log to stdout when dashboard is disabled
+		log.Println(message)
+		return
+	}
+	
+	// Route to activity feed
+	rai.addActivityEntry(activityType, message, nil)
+}
+
 func (dlw *DashboardLogWriter) Write(p []byte) (n int, err error) {
-	// Don't write to stdout when dashboard is enabled - only capture for activity feed
-	if dlw.indexer == nil || !dlw.indexer.dashboardEnabled.Load() {
-		// Only write to stdout when dashboard is disabled
+	logMsg := string(p)
+	
+	// Check if dashboard is running
+	if dlw.indexer == nil || !dlw.indexer.dashboardEnabled.Load() || !dlw.indexer.dashboardRunning.Load() {
+		// Dashboard not running - write everything to stdout
 		os.Stdout.Write(p)
 		return len(p), nil
 	}
+	
+	// Always show critical dashboard messages
+	if strings.Contains(logMsg, "[Web]") || 
+	   strings.Contains(logMsg, "[Dashboard]") ||
+	   strings.Contains(logMsg, "Dashboard server") ||
+	   strings.Contains(logMsg, "Dashboard started") ||
+	   strings.Contains(logMsg, "Web dashboard") {
+		os.Stdout.Write(p)
+	}
+	
+	// For terminal-only mode, suppress regular logs to keep display clean
+	// Only critical messages should appear
+	dashboardType := os.Getenv("DASHBOARD_TYPE")
+	if dashboardType == "terminal" {
+		// Terminal mode - suppress most logs to keep the display clean
+		// Only show critical errors
+		if strings.Contains(logMsg, "[FATAL]") || strings.Contains(logMsg, "Failed to") {
+			os.Stderr.Write(p)
+		}
+		return len(p), nil
+	}
 
-	logMsg := strings.TrimSpace(string(p))
+	logMsg = strings.TrimSpace(string(p))
 	if len(logMsg) == 0 {
 		return len(p), nil
 	}
@@ -315,6 +353,8 @@ func (dlw *DashboardLogWriter) Write(p []byte) (n int, err error) {
 	if errorType, component, operation, message, isError := errors.ParseLogMessage(logMsg); isError {
 		// Errors are automatically forwarded to dashboard by unified system
 		errors.Get().LogError(errorType, component, operation, message)
+		// Don't process errors as activities - they belong in ERROR MONITOR only
+		return len(p), nil
 	} else {
 		// Non-error activity - parse and add to activity feed
 		activityType := "system"
@@ -331,11 +371,11 @@ func (dlw *DashboardLogWriter) Write(p []byte) (n int, err error) {
 				cleanMsg = cleanMsg[idx+idx2+2:]
 			}
 		}
-		
+
 		// Remove emoji prefixes and categorize
 		cleanMsg = strings.TrimSpace(cleanMsg)
 		// Remove emoji prefixes from log messages
-		
+
 		// Categorize activity based on message content
 		switch {
 		// Look for our custom prefixes first
@@ -349,8 +389,8 @@ func (dlw *DashboardLogWriter) Write(p []byte) (n int, err error) {
 			activityType = "system"
 		case strings.Contains(cleanMsg, "[INFO]"):
 			// Skip verbose INFO messages that clutter the dashboard
-			if strings.Contains(cleanMsg, "at capacity") || 
-			   strings.Contains(cleanMsg, "applying backpressure") {
+			if strings.Contains(cleanMsg, "at capacity") ||
+				strings.Contains(cleanMsg, "applying backpressure") {
 				return len(p), nil
 			}
 			activityType = "info"
@@ -374,12 +414,12 @@ func (dlw *DashboardLogWriter) Write(p []byte) (n int, err error) {
 		default:
 			// Skip unimportant messages
 			if strings.Contains(cleanMsg, "Received full block") ||
-			   strings.Contains(cleanMsg, "at slot") && len(cleanMsg) < 30 {
+				strings.Contains(cleanMsg, "at slot") && len(cleanMsg) < 30 {
 				return len(p), nil
 			}
 			activityType = "info"
 		}
-		
+
 		// Remove the [PREFIX] parts for cleaner display
 		for _, prefix := range []string{"[BLOCK] ", "[SYNC] ", "[BATCH] ", "[ERA] ", "[SYSTEM] ", "[ROLLBACK] "} {
 			cleanMsg = strings.Replace(cleanMsg, prefix, "", 1)
@@ -391,24 +431,144 @@ func (dlw *DashboardLogWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// clearShelleyData removes all Shelley era data from the database
+func clearShelleyData(db *gorm.DB) error {
+	// Start a transaction
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Delete in reverse dependency order
+	// First get all Shelley block hashes
+	var shelleyBlockHashes [][]byte
+	if err := db.Model(&models.Block{}).
+		Where("era = ?", "Shelley").
+		Pluck("hash", &shelleyBlockHashes).Error; err != nil {
+		return fmt.Errorf("failed to get Shelley block hashes: %w", err)
+	}
+	
+	if len(shelleyBlockHashes) == 0 {
+		// No Shelley blocks to clear
+		return nil
+	}
+	
+	// Found Shelley blocks to clear - will be logged when dashboard is ready
+	
+	// Delete all related data
+	tables := []struct{
+		model interface{}
+		condition string
+		args []interface{}
+	}{
+		// Transaction outputs (with assets)
+		{&models.MultiAsset{}, "tx_out_id IN (SELECT id FROM tx_outs WHERE tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?)))", []interface{}{shelleyBlockHashes}},
+		{&models.TxOut{}, "tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		
+		// Transaction inputs
+		{&models.TxIn{}, "tx_in_id IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		
+		// Staking operations
+		{&models.Delegation{}, "tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		{&models.StakeRegistration{}, "tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		{&models.StakeDeregistration{}, "tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		{&models.Withdrawal{}, "tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		
+		// Pool operations
+		{&models.PoolUpdate{}, "registered_tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		{&models.PoolRetire{}, "announced_tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		
+		// Metadata
+		{&models.TxMetadata{}, "tx_hash IN (SELECT hash FROM txes WHERE block_hash IN (?))", []interface{}{shelleyBlockHashes}},
+		
+		// Transactions
+		{&models.Tx{}, "block_hash IN (?)", []interface{}{shelleyBlockHashes}},
+		
+		// Finally blocks
+		{&models.Block{}, "hash IN (?)", []interface{}{shelleyBlockHashes}},
+	}
+
+	for _, table := range tables {
+		if err := tx.Where(table.condition, table.args...).Delete(table.model).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to delete %T: %w", table.model, err)
+		}
+	}
+
+	return tx.Commit().Error
+}
+
+// rotateLogFiles rotates large log files on startup
+func rotateLogFiles() {
+	// List of log files to check and potentially rotate
+	logFiles := []string{
+		"unified_errors.log",
+		"errors.log",
+		"logs/nectar.log",
+	}
+	
+	const maxSize = 10 * 1024 * 1024 // 10MB max before rotation
+	
+	for _, logFile := range logFiles {
+		if info, err := os.Stat(logFile); err == nil {
+			if info.Size() > maxSize {
+				// Rotate the file
+				backupName := fmt.Sprintf("%s.%s.bak", logFile, time.Now().Format("20060102-150405"))
+				if err := os.Rename(logFile, backupName); err == nil {
+					log.Printf("[INFO] Rotated large log file: %s (%.1f MB) -> %s", 
+						logFile, float64(info.Size())/(1024*1024), backupName)
+				}
+			}
+		}
+	}
+}
+
 func main() {
+	// Parse command-line flags
+	var clearShelley bool
+	flag.BoolVar(&clearShelley, "clear-shelley", false, "Clear all Shelley era data before starting")
+	flag.Parse()
+	
 	log.Println("NECTAR BLOCKCHAIN INDEXER")
 	log.Println("   High-performance Cardano indexer")
 
+	// Rotate large log files on startup
+	rotateLogFiles()
+
 	// Initialize unified error system early (dashboard callback will be set later)
 	errors.Initialize(nil)
+	
+	// Clear accumulated errors from previous runs
+	errors.Get().ClearErrors()
+
+	// Set up MySQL driver logging to capture all warnings and errors
+	errors.SetupMySQLLogging()
 
 	// Initialize logging configuration (production mode by default)
 	processors.InitLoggingConfig(false)
+
+	// CRITICAL FIX: Buffer all initialization logs to prevent dashboard corruption
+	var initLogBuffer strings.Builder
+	originalOutput := log.Writer()
+	log.SetOutput(&initLogBuffer)
 
 	if os.Getenv("SKIP_MIGRATIONS") != "true" {
 		log.Println("Running database migrations...")
 		db, err := database.InitTiDB()
 		if err != nil {
+			// Restore output for fatal error
+			log.SetOutput(originalOutput)
 			log.Fatalf("Failed to initialize database: %v", err)
 		}
 
 		if err := database.AutoMigrate(db); err != nil {
+			// Restore output for fatal error
+			log.SetOutput(originalOutput)
 			log.Fatalf("Failed to run migrations: %v", err)
 		}
 		log.Println("Database migrations completed!")
@@ -416,11 +576,26 @@ func main() {
 
 	db, err := database.InitTiDB()
 	if err != nil {
+		// Restore output for fatal error
+		log.SetOutput(originalOutput)
 		log.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	// Handle manual Shelley cleanup if requested
+	if clearShelley {
+		log.Println("Manual Shelley cleanup requested...")
+		if err := clearShelleyData(db); err != nil {
+			// Restore output for fatal error
+			log.SetOutput(originalOutput)
+			log.Fatalf("Failed to clear Shelley data: %v", err)
+		}
+		log.Println("Shelley data cleared successfully")
 	}
 
 	indexer, err := NewReferenceAlignedIndexer(db)
 	if err != nil {
+		// Restore output for fatal error
+		log.SetOutput(originalOutput)
 		log.Fatalf("Failed to create indexer: %v", err)
 	}
 
@@ -429,25 +604,17 @@ func main() {
 	log.SetOutput(dashboardWriter)
 	log.SetFlags(log.LstdFlags) // Keep timestamps for parsing
 
-	// Also capture stderr where GORM slow queries are logged
-	originalStderr := os.Stderr
-	stderrReader, stderrWriter, err := os.Pipe()
-	if err == nil {
-		os.Stderr = stderrWriter
-		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := stderrReader.Read(buf)
-				if err != nil {
-					break
-				}
-				// Send stderr content to our dashboard writer
-				dashboardWriter.Write(buf[:n])
-				// Also send to original stderr for debugging if needed
-				originalStderr.Write(buf[:n])
+	// Process buffered initialization logs through the dashboard writer
+	if initLogs := initLogBuffer.String(); initLogs != "" {
+		for _, line := range strings.Split(strings.TrimSpace(initLogs), "\n") {
+			if line != "" {
+				dashboardWriter.Write([]byte(line + "\n"))
 			}
-		}()
+		}
 	}
+
+	// Note: stderr interception is now handled by the MySQL logger setup
+	// which routes MySQL errors through the unified error system
 
 	if err := indexer.Start(); err != nil {
 		log.Fatalf("Failed to start indexer: %v", err)
@@ -457,9 +624,8 @@ func main() {
 func NewReferenceAlignedIndexer(db *gorm.DB) (*ReferenceAlignedIndexer, error) {
 	// Create a temporary buffer to capture log messages during initialization
 	var logBuffer bytes.Buffer
-	originalLogOutput := log.Writer()
 	log.SetOutput(&logBuffer)
-	
+
 	// We'll restore the log output at the end of initialization, not on defer
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -483,62 +649,134 @@ func NewReferenceAlignedIndexer(db *gorm.DB) (*ReferenceAlignedIndexer, error) {
 			entries: make([]ActivityEntry, 0),
 			maxSize: 100,
 		},
-		
+
 		// Parallel processing happens at transaction level, not block level
 	}
 
-	// Enable dashboard by default
-	indexer.dashboardEnabled.Store(true)
-	
-	// Initialize dashboard renderer
-	indexer.dashboardRenderer = dashboard.NewDashboardRenderer()
-	
-	// Clear any residual output before starting dashboard
-	fmt.Print("\033[2J\033[3J\033[H")
-	
-	indexer.dashboardRenderer.Initialize()
+	// Enable dashboard by default (unless disabled by env)
+	if os.Getenv("NECTAR_NO_DASHBOARD") != "" || os.Getenv("DASHBOARD_TYPE") == "none" {
+		indexer.dashboardEnabled.Store(false)
+		log.Println("[INFO] Dashboard disabled by environment")
+	} else {
+		indexer.dashboardEnabled.Store(true)
+		
+		// Initialize dashboard using factory
+		log.Println("[INFO] Creating dashboard...")
+		var dashboardErr error
+		indexer.dashboard, dashboardErr = dashboard.CreateDefaultDashboard()
+		if dashboardErr != nil {
+			log.Printf("[WARNING] Failed to create dashboard: %v", dashboardErr)
+			indexer.dashboardEnabled.Store(false)
+		} else {
+			log.Println("[INFO] Dashboard created successfully")
+		}
+	}
+
+	// Start the Bubble Tea dashboard in a goroutine AFTER all initialization
+	// We'll start it later in the Start() method to ensure everything is ready
 
 	// Connect unified error system to dashboard
-	errors.Get().SetDashboardCallback(indexer.addErrorEntry)
-	log.Printf("Unified Error System connected to dashboard")
+	// Set up unified error system callback - errors will appear in ERROR MONITOR section
+	// Create a buffered channel for dashboard errors to prevent blocking
+	dashboardErrorChan := make(chan struct{
+		errorType string
+		message   string
+	}, 1000)
+	
+	// Start a goroutine to process dashboard errors sequentially
+	go func() {
+		for err := range dashboardErrorChan {
+			// Forward the actual error to the dashboard
+			if indexer.dashboard != nil {
+				// Parse the message to extract component and operation if possible
+				parts := strings.SplitN(err.message, ":", 2)
+				component := "System"
+				message := err.message
+				
+				if len(parts) == 2 && strings.Contains(parts[0], ".") {
+					// Format is "Component.Operation: message"
+					compOpParts := strings.SplitN(parts[0], ".", 2)
+					if len(compOpParts) == 2 {
+						component = compOpParts[0]
+						message = compOpParts[1] + ": " + parts[1]
+					}
+				}
+				
+				// Forward to dashboard with proper type
+				indexer.dashboard.AddError(err.errorType, component, message)
+			}
+		}
+	}()
+	
+	errors.Get().SetDashboardCallback(func(errorType, message string) {
+		// Non-blocking send to channel
+		select {
+		case dashboardErrorChan <- struct{
+			errorType string
+			message   string
+		}{errorType, message}:
+		default:
+			// Channel full, drop the error to prevent blocking
+		}
+	})
+	// Note: Can't use logToActivity yet as dashboard is still initializing
+	// These will be captured by the buffered log processing below
 
-	// Create multiple DB connections for parallel processing
-	for i := 0; i < DB_CONNECTION_POOL; i++ {
-		dbConn, err := database.InitTiDB()
+	// Create connection pool manager with dedicated connections for each worker
+	poolConfig := database.GetDefaultConnectionPoolConfig()
+	poolConfig.WorkerCount = WORKER_COUNT
+	
+	connPoolManager, err := database.NewConnectionPoolManager(poolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create connection pool manager: %w", err)
+	}
+	
+	// Store the connection pool manager
+	indexer.connPoolManager = connPoolManager
+	
+	// Create block processors with dedicated connections
+	for i := 0; i < WORKER_COUNT; i++ {
+		dbConn, err := connPoolManager.GetConnection(i)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create DB connection %d: %w", i, err)
+			return nil, fmt.Errorf("failed to get connection for worker %d: %w", i, err)
 		}
 		processor := processors.NewBlockProcessor(dbConn)
 		indexer.dbConnections = append(indexer.dbConnections, processor)
 	}
 
-	log.Printf("Created %d database connections for parallel processing", DB_CONNECTION_POOL)
+	// Initialize metadata fetcher for off-chain data with a dedicated connection
+	if indexer.connPoolManager != nil {
+		// Create a dedicated connection for metadata fetcher
+		metadataDB, err := database.InitTiDB()
+		if err != nil {
+			// Will be captured by log buffer
+		} else {
+			metadataConfig := metadata.DefaultConfig()
+			indexer.metadataFetcher = metadata.New(metadataDB, metadataConfig)
+			// Will be captured by log buffer
 
-	// Initialize metadata fetcher for off-chain data
-	if len(indexer.dbConnections) > 0 {
-		metadataConfig := metadata.DefaultConfig()
-		indexer.metadataFetcher = metadata.New(indexer.dbConnections[0].GetDB(), metadataConfig)
-		log.Printf("Initialized metadata fetcher for off-chain pool and governance data")
-
-		// Set metadata fetcher on all block processors
-		for _, processor := range indexer.dbConnections {
-			processor.SetMetadataFetcher(indexer.metadataFetcher)
+			// Set metadata fetcher on all block processors
+			for _, processor := range indexer.dbConnections {
+				processor.SetMetadataFetcher(indexer.metadataFetcher)
+			}
 		}
 
-		// Initialize state query service for ledger state data
-		stateQueryConfig := statequery.DefaultConfig()
-		// Try to detect socket path
-		detector := NewSmartSocketDetector()
-		if socketPath, err := detector.DetectCardanoSocket(); err == nil {
-			stateQueryConfig.SocketPath = socketPath
+		// Initialize state query service with another dedicated connection
+		stateQueryDB, err := database.InitTiDB()
+		if err != nil {
+			// Will be captured by log buffer
+		} else {
+			stateQueryConfig := statequery.DefaultConfig()
+			// Try to detect socket path
+			detector := NewSmartSocketDetector()
+			if socketPath, err := detector.DetectCardanoSocket(); err == nil {
+				stateQueryConfig.SocketPath = socketPath
+			}
+			indexer.stateQueryService = statequery.New(stateQueryDB, stateQueryConfig)
+			// Will be captured by log buffer
 		}
-		indexer.stateQueryService = statequery.New(indexer.dbConnections[0].GetDB(), stateQueryConfig)
-		log.Printf("[SYSTEM] Initialized state query service for rewards and ledger state data")
 	}
 
-	// Restore original log output now that dashboard is ready
-	log.SetOutput(originalLogOutput)
-	
 	// Process buffered log messages through the dashboard
 	bufferedLogs := logBuffer.String()
 	if bufferedLogs != "" {
@@ -555,11 +793,14 @@ func NewReferenceAlignedIndexer(db *gorm.DB) (*ReferenceAlignedIndexer, error) {
 		}
 	}
 
+	// Restore original log output with dashboard writer that routes logs appropriately
+	log.SetOutput(&DashboardLogWriter{indexer: indexer})
+
 	return indexer, nil
 }
 
 func (rai *ReferenceAlignedIndexer) Start() error {
-	log.Println(" Creating REFERENCE-ALIGNED ouroboros connection...")
+	rai.logToActivity("system", "Creating REFERENCE-ALIGNED ouroboros connection...")
 
 	if err := rai.createReferenceConnectionWithBlockFetch(); err != nil {
 		return fmt.Errorf("failed to create connection: %w", err)
@@ -569,7 +810,7 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 	if len(rai.dbConnections) > 0 {
 		var existingBlockCount int64
 		var maxSlot sql.NullInt64
-		
+
 		// Get existing block count
 		err := rai.dbConnections[0].GetDB().Model(&models.Block{}).Count(&existingBlockCount).Error
 		if err == nil && existingBlockCount > 0 {
@@ -578,9 +819,9 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 			rai.stats.lastBlockCount = existingBlockCount
 			rai.stats.cachedBlockCount = existingBlockCount
 			rai.stats.mutex.Unlock()
-			log.Printf(" Initialized dashboard with %d existing blocks from database", existingBlockCount)
+			rai.logToActivity("system", fmt.Sprintf("Initialized dashboard with %d existing blocks from database", existingBlockCount))
 		}
-		
+
 		// Get the highest slot number
 		err = rai.dbConnections[0].GetDB().Model(&models.Block{}).
 			Select("MAX(slot_no)").
@@ -590,9 +831,9 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 			rai.stats.mutex.Lock()
 			rai.stats.cachedSlot = uint64(maxSlot.Int64)
 			rai.stats.mutex.Unlock()
-			log.Printf(" Initialized dashboard at slot %d", maxSlot.Int64)
+			rai.logToActivity("system", fmt.Sprintf("Initialized dashboard at slot %d", maxSlot.Int64))
 		}
-		
+
 		// Also get transaction count for complete dashboard initialization
 		var txCount int64
 		err = rai.dbConnections[0].GetDB().Model(&models.Tx{}).Count(&txCount).Error
@@ -609,10 +850,10 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 	// Start metadata fetcher service for off-chain data
 	if rai.metadataFetcher != nil {
 		if err := rai.metadataFetcher.Start(); err != nil {
-			log.Printf("[WARNING] Failed to start metadata fetcher: %v", err)
+			errors.Get().ProcessingError("MetadataFetcher", "Start", fmt.Errorf("failed to start metadata fetcher: %w", err))
 			// Continue without metadata fetching - it's not critical
 		} else {
-			log.Println(" Started metadata fetcher service for off-chain pool and governance data")
+			rai.logToActivity("system", "Started metadata fetcher service for off-chain pool and governance data")
 		}
 	}
 
@@ -622,25 +863,57 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 		go func() {
 			// Wait a bit to let sync establish what era we're in
 			time.Sleep(30 * time.Second)
-			
+
 			// Check if we're still in Byron
 			var currentSlot uint64
 			if len(rai.dbConnections) > 0 {
 				rai.dbConnections[0].GetDB().Model(&models.Block{}).Select("MAX(slot_no)").Scan(&currentSlot)
 			}
-			
+
 			if currentSlot < 4492800 { // Byron ends at slot 4492799
-				log.Println(" Delaying state query service start until after Byron era")
+				rai.logToActivity("system", "Delaying state query service start until after Byron era")
 				return
 			}
-			
+
 			if err := rai.stateQueryService.Start(); err != nil {
-				log.Printf("[WARNING] Failed to start state query service: %v", err)
+				errors.Get().ProcessingError("StateQuery", "Start", fmt.Errorf("failed to start state query service: %w", err))
 				// Continue without state queries - it's not critical
 			} else {
-				log.Println(" Started state query service for rewards and ledger state data")
+				rai.logToActivity("system", "Started state query service for rewards and ledger state data")
 			}
 		}()
+	}
+
+	// Start the dashboard FIRST before any heavy processing
+	if rai.dashboardEnabled.Load() && rai.dashboard != nil {
+		log.Println("[INFO] Starting dashboard system...")
+		if err := rai.dashboard.Start(); err != nil {
+			errors.Get().ProcessingError("Dashboard", "Start", fmt.Errorf("failed to start dashboard: %w", err))
+			// Dashboard is optional, so continue without it
+			rai.dashboardEnabled.Store(false)
+			log.Printf("[ERROR] Dashboard failed to start: %v", err)
+		} else {
+			log.Println("[INFO] Dashboard started successfully")
+			
+			// Give dashboard time to fully initialize
+			log.Println("[INFO] Waiting for dashboard to stabilize...")
+			time.Sleep(3 * time.Second)
+			
+			// NOW mark as running after it's stable
+			rai.dashboardRunning.Store(true)
+			
+			// Start the dashboard update loop
+			go rai.dashboardUpdateLoop()
+			
+			// Print dashboard access info
+			if os.Getenv("DASHBOARD_TYPE") == "web" || os.Getenv("DASHBOARD_TYPE") == "both" {
+				port := os.Getenv("WEB_PORT")
+				if port == "" {
+					port = "8080"
+				}
+				log.Printf("[INFO] Web dashboard available at http://0.0.0.0:%s", port)
+			}
+		}
 	}
 
 	// Start performance monitoring
@@ -651,11 +924,11 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 	rai.blockWorkers = 8
 	// Larger queue to reduce backpressure frequency
 	rai.blockQueue = make(chan blockQueueItem, 10000)
-	log.Printf(" Initializing %d block processing workers with queue capacity %d", rai.blockWorkers, 10000)
+	rai.logToActivity("system", fmt.Sprintf("Initializing %d block processing workers with queue capacity %d", rai.blockWorkers, 10000))
 	rai.startBlockWorkers()
 
 	// Start ChainSync
-	log.Printf(" Starting CHAINSYNC with async block processing (%d workers)", rai.blockWorkers)
+	rai.logToActivity("system", fmt.Sprintf("Starting CHAINSYNC with async block processing (%d workers)", rai.blockWorkers))
 	if err := rai.startReferenceChainSync(); err != nil {
 		return fmt.Errorf("failed to start ChainSync: %w", err)
 	}
@@ -669,51 +942,47 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 
 // Stop gracefully shuts down the indexer
 func (rai *ReferenceAlignedIndexer) Stop() error {
-	log.Println(" Stopping indexer...")
+	rai.logToActivity("system", "Stopping indexer...")
 
 	// Stop metadata fetcher
 	if rai.metadataFetcher != nil {
 		if err := rai.metadataFetcher.Stop(); err != nil {
-			log.Printf("[WARNING] Error stopping metadata fetcher: %v", err)
+			errors.Get().ProcessingError("MetadataFetcher", "Stop", fmt.Errorf("error stopping metadata fetcher: %w", err))
 		}
 	}
 
 	// Stop state query service
 	if rai.stateQueryService != nil {
 		if err := rai.stateQueryService.Stop(); err != nil {
-			log.Printf("[WARNING] Error stopping state query service: %v", err)
+			errors.Get().ProcessingError("StateQuery", "Stop", fmt.Errorf("error stopping state query service: %w", err))
 		}
 	}
 
 	// Cancel context
 	rai.cancel()
-	
+
 	// Close block queue to signal workers to stop
 	if rai.blockQueue != nil {
 		close(rai.blockQueue)
-		log.Printf(" Waiting for %d workers to finish...", rai.activeWorkers.Load())
+		rai.logToActivity("system", fmt.Sprintf("Waiting for %d workers to finish...", rai.activeWorkers.Load()))
 	}
 
 	// Close connection
 	rai.connMutex.Lock()
 	if rai.oConn != nil {
 		if err := rai.oConn.Close(); err != nil {
-			log.Printf("[WARNING] Error closing connection: %v", err)
+			errors.Get().ProcessingError("Connection", "Close", fmt.Errorf("error closing connection: %w", err))
 		}
 	}
 	rai.connMutex.Unlock()
 
-	// Close database connections
-	for _, conn := range rai.dbConnections {
-		if db := conn.GetDB(); db != nil {
-			if sqlDB, err := db.DB(); err == nil {
-				sqlDB.Close()
-			}
-		}
+	// Clean up connection pool manager
+	if rai.connPoolManager != nil {
+		rai.connPoolManager.Cleanup()
 	}
 
 	rai.isRunning.Store(false)
-	log.Println("[OK] Indexer stopped")
+	rai.logToActivity("system", "Indexer stopped successfully")
 	return nil
 }
 
@@ -726,7 +995,7 @@ func (rai *ReferenceAlignedIndexer) createReferenceConnectionWithBlockFetch() er
 		return fmt.Errorf("failed to detect Cardano node socket: %w", err)
 	}
 
-	log.Printf(" Creating smart gouroboros connection at: %s", socketPath)
+	rai.logToActivity("system", fmt.Sprintf("Creating smart gouroboros connection at: %s", socketPath))
 
 	// Create reference-style configs
 	chainSyncConfig := rai.buildChainSyncConfig()
@@ -781,7 +1050,11 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollBackwardHandler(
 	point common.Point,
 	tip chainsync.Tip,
 ) error {
-	log.Printf(" ROLLBACK REQUEST: Rolling back to slot %d, hash %x", point.Slot, point.Hash)
+	hashDisplay := "genesis"
+	if len(point.Hash) >= 8 {
+		hashDisplay = fmt.Sprintf("%x", point.Hash[:8])
+	}
+	rai.logToActivity("rollback", fmt.Sprintf("ROLLBACK REQUEST: Rolling back to slot %d, hash %s", point.Slot, hashDisplay))
 
 	// Get database connection
 	if len(rai.dbConnections) == 0 {
@@ -799,17 +1072,17 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollBackwardHandler(
 			if err == gorm.ErrRecordNotFound {
 				// This is normal on fresh sync when rolling back to slot 0
 				if point.Slot == 0 {
-					log.Printf(" Fresh sync detected - no rollback needed for slot 0")
+					rai.logToActivity("rollback", "Fresh sync detected - no rollback needed for slot 0")
 					return nil
 				}
-				log.Printf("[WARNING] Rollback target block not found (slot %d), performing full rollback", point.Slot)
+				rai.logToActivity("rollback", fmt.Sprintf("Rollback target block not found (slot %d), performing full rollback", point.Slot))
 				// If we don't have the target block, rollback everything after the slot
 				return rai.performFullRollback(tx, point.Slot)
 			}
 			return fmt.Errorf("failed to find rollback target block: %w", err)
 		}
 
-		log.Printf(" Found rollback target: block hash %x at slot %d", targetBlock.Hash, point.Slot)
+		rai.logToActivity("rollback", fmt.Sprintf("Found rollback target: block hash %x at slot %d", targetBlock.Hash[:8], point.Slot))
 
 		// Delete all blocks after the target block
 		// This will cascade to transactions and related data due to foreign keys
@@ -818,11 +1091,12 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollBackwardHandler(
 			return fmt.Errorf("failed to delete blocks after rollback point: %w", result.Error)
 		}
 
-		log.Printf(" Deleted %d blocks after rollback point", result.RowsAffected)
+		rai.logToActivity("rollback", fmt.Sprintf("Deleted %d blocks after rollback point", result.RowsAffected))
 
 		// Also clean up any orphaned data that might not have cascade deletes
 		if err := rai.cleanupOrphanedData(tx, targetBlock.Hash); err != nil {
-			log.Printf("[WARNING] Failed to cleanup orphaned data: %v", err)
+			// Log warning through unified error system
+			errors.Get().ProcessingError("Rollback", "CleanupOrphaned", fmt.Errorf("failed to cleanup orphaned data: %w", err))
 			// Don't fail the rollback for cleanup issues
 		}
 
@@ -834,11 +1108,17 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollBackwardHandler(
 		return fmt.Errorf("rollback failed: %w", err)
 	}
 
-	log.Printf("[OK] Successfully rolled back to slot %d", point.Slot)
-	rai.addActivityEntry("rollback", fmt.Sprintf("Rolled back to slot %d", point.Slot), map[string]interface{}{
+	rai.logToActivity("rollback", fmt.Sprintf("Successfully rolled back to slot %d", point.Slot))
+	// Also add detailed entry for activity feed
+	activityData := map[string]interface{}{
 		"slot": point.Slot,
-		"hash": fmt.Sprintf("%x", point.Hash),
-	})
+	}
+	if len(point.Hash) >= 8 {
+		activityData["hash"] = fmt.Sprintf("%x", point.Hash[:8])
+	} else {
+		activityData["hash"] = "genesis"
+	}
+	rai.addActivityEntry("rollback", fmt.Sprintf("Rolled back to slot %d", point.Slot), activityData)
 
 	return nil
 }
@@ -854,12 +1134,12 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollForwardHandler(
 	case ledger.Block:
 		block = v
 		if processors.GlobalLoggingConfig.LogBlockProcessing.Load() {
-			log.Printf("[BLOCK] Processing block at slot %d (type %d)", block.SlotNumber(), blockType)
+			rai.logToActivity("block", fmt.Sprintf("Processing block at slot %d (type %d)", block.SlotNumber(), blockType))
 		}
 	case ledger.BlockHeader:
 		blockSlot := v.SlotNumber()
 		blockHash := v.Hash().Bytes()
-		log.Printf("[SYNC] Fetching full block for slot %d via BlockFetch", blockSlot)
+		rai.logToActivity("sync", fmt.Sprintf("Fetching full block for slot %d via BlockFetch", blockSlot))
 
 		rai.connMutex.RLock()
 		conn := rai.oConn
@@ -871,29 +1151,28 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollForwardHandler(
 
 		// Check if BlockFetch is available
 		if !rai.useBlockFetch.Load() {
-			log.Printf("[ERROR] BlockFetch not available but received BlockHeader for slot %d", blockSlot)
+			errors.Get().ProcessingError("BlockFetch", "Availability", fmt.Errorf("BlockFetch not available but received BlockHeader for slot %d", blockSlot))
 			return fmt.Errorf("received BlockHeader but BlockFetch not available (Node-to-Client mode)")
 		}
 
 		// Check if BlockFetch client is available
 		if conn.BlockFetch() == nil || conn.BlockFetch().Client == nil {
-			log.Printf("[ERROR] BlockFetch client is nil for slot %d", blockSlot)
+			errors.Get().ProcessingError("BlockFetch", "Client", fmt.Errorf("BlockFetch client is nil for slot %d", blockSlot))
 			return fmt.Errorf("BlockFetch client is not available")
 		}
 
 		var err error
 		block, err = conn.BlockFetch().Client.GetBlock(common.NewPoint(blockSlot, blockHash))
 		if err != nil {
-			log.Printf("[ERROR] Failed to fetch block from header (slot %d): %v", blockSlot, err)
 			errors.Get().NetworkError("BlockFetch", "GetBlock", fmt.Errorf("failed to fetch block from header (slot %d): %w", blockSlot, err))
 			return fmt.Errorf("failed to fetch block from header: %w", err)
 		}
 
-		log.Printf("[OK] Successfully fetched full block for slot %d via BlockFetch", blockSlot)
+		rai.logToActivity("sync", fmt.Sprintf("Successfully fetched full block for slot %d via BlockFetch", blockSlot))
 		// Add activity log for BlockHeader fetching
-		rai.addActivityEntry("BlockHeader", fmt.Sprintf("Fetched full block for slot %d via BlockFetch", blockSlot), map[string]interface{}{
+		rai.addActivityEntry("sync", fmt.Sprintf("Fetched full block for slot %d via BlockFetch", blockSlot), map[string]interface{}{
 			"slot": blockSlot,
-			"hash": fmt.Sprintf("%x", blockHash),
+			"hash": fmt.Sprintf("%x", blockHash[:8]),
 		})
 	default:
 		return fmt.Errorf("invalid block data type: %T", blockData)
@@ -914,7 +1193,7 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollForwardHandler(
 	default:
 		// Queue is full - apply backpressure (this is normal during fast sync)
 		// Don't log this to avoid dashboard clutter
-		
+
 		// Wait for queue to have space
 		select {
 		case rai.blockQueue <- blockQueueItem{
@@ -952,10 +1231,9 @@ func (rai *ReferenceAlignedIndexer) blockFetchBlockHandler(
 }
 
 func (rai *ReferenceAlignedIndexer) batchDoneHandler(ctx blockfetch.CallbackContext) error {
-	log.Println(" Reference BlockFetch batch completed!")
+	rai.logToActivity("sync", "Reference BlockFetch batch completed!")
 	return nil
 }
-
 
 // updateSequentialStats - Update performance statistics for sequential processing
 func (rai *ReferenceAlignedIndexer) updateSequentialStats(block ledger.Block) {
@@ -968,7 +1246,6 @@ func (rai *ReferenceAlignedIndexer) updateSequentialStats(block ledger.Block) {
 	// Don't update lastStatsTime here - let dashboard calculate speed properly
 }
 
-
 // startBlockWorkers starts workers for async block processing
 func (rai *ReferenceAlignedIndexer) startBlockWorkers() {
 	for i := 0; i < rai.blockWorkers; i++ {
@@ -980,45 +1257,157 @@ func (rai *ReferenceAlignedIndexer) startBlockWorkers() {
 // blockWorker processes blocks from the queue
 func (rai *ReferenceAlignedIndexer) blockWorker(id int) {
 	defer rai.workerWg.Done()
-	log.Printf(" Worker %d started", id)
+	rai.logToActivity("system", fmt.Sprintf("Worker %d started", id))
 	rai.activeWorkers.Add(1)
 	defer rai.activeWorkers.Add(-1)
-	
-	// Use round-robin DB connection assignment
-	processor := rai.dbConnections[id % len(rai.dbConnections)]
-	
+
+	// Each worker gets its own dedicated connection to avoid "commands out of sync" errors
+	// This ensures no connection sharing between concurrent workers
+	if id >= len(rai.dbConnections) {
+		errors.Get().ProcessingError("Worker", fmt.Sprintf("Worker%d", id), 
+			fmt.Errorf("no dedicated connection available (only %d connections)", len(rai.dbConnections)))
+		return
+	}
+	processor := rai.dbConnections[id]
+
 	for {
 		select {
 		case item, ok := <-rai.blockQueue:
 			if !ok {
-				log.Printf(" Worker %d: shutting down", id)
+				rai.logToActivity("system", fmt.Sprintf("Worker %d: shutting down", id))
 				return
 			}
+
+			// Process the block with retry logic
+			maxRetries := 3
+			retryDelay := 100 * time.Millisecond
+			var err error
 			
-			// Process the block using the processor's connection
-			err := processor.ProcessBlock(rai.ctx, item.block, item.blockType)
-			if err != nil {
-				log.Printf("[ERROR] Worker %d failed to process block at slot %d: %v", 
-					id, item.block.SlotNumber(), err)
+			for attempt := 0; attempt <= maxRetries; attempt++ {
+				// Ensure connection is healthy before processing
+				if connErr := processor.EnsureHealthyConnection(); connErr != nil {
+					errors.Get().DatabaseError("Worker", fmt.Sprintf("Worker%d.HealthCheck", id), 
+						fmt.Errorf("connection health check failed: %w", connErr))
+					// Try to recover the connection through the pool manager
+					if rai.connPoolManager != nil {
+						if recoverErr := rai.connPoolManager.RecoverConnection(id); recoverErr != nil {
+							errors.Get().DatabaseError("Worker", fmt.Sprintf("Worker%d.Recovery", id),
+								fmt.Errorf("failed to recover connection: %w", recoverErr))
+						} else {
+							// Get the new connection and update the processor
+							if newConn, connErr := rai.connPoolManager.GetConnection(id); connErr == nil {
+								// Create new processor with the recovered connection
+								newProcessor := processors.NewBlockProcessor(newConn)
+								// Copy metadata fetcher if it exists
+								if rai.metadataFetcher != nil {
+									newProcessor.SetMetadataFetcher(rai.metadataFetcher)
+								}
+								// Update both local and shared references
+								processor = newProcessor
+								rai.dbConnections[id] = newProcessor
+								rai.logToActivity("system", fmt.Sprintf("Worker %d: connection recovered", id))
+							}
+						}
+					}
+				}
+				
+				err = processor.ProcessBlock(rai.ctx, item.block, item.blockType)
+				if err == nil {
+					// Success - update stats
+					rai.updateSequentialStats(item.block)
+					rai.lastProcessedSlot.Store(item.block.SlotNumber())
+					break
+				}
+				
+				// Check if it's a connection error that might be recoverable
+				errStr := err.Error()
+				if strings.Contains(errStr, "commands out of sync") || 
+				   strings.Contains(errStr, "bad connection") ||
+				   strings.Contains(errStr, "invalid connection") ||
+				   strings.Contains(errStr, "broken pipe") {
+					if attempt < maxRetries {
+						errors.Get().DatabaseError("Worker", fmt.Sprintf("Worker%d.Retry", id),
+							fmt.Errorf("connection error at slot %d (attempt %d/%d): %w", 
+								item.block.SlotNumber(), attempt+1, maxRetries+1, err))
+						time.Sleep(retryDelay)
+						retryDelay *= 2 // Exponential backoff
+						
+						// Try to recover connection through pool manager
+						if rai.connPoolManager != nil {
+							if recoverErr := rai.connPoolManager.RecoverConnection(id); recoverErr == nil {
+								// Get the new connection and update the processor
+								if newConn, connErr := rai.connPoolManager.GetConnection(id); connErr == nil {
+									processor = processors.NewBlockProcessor(newConn)
+									rai.dbConnections[id] = processor
+								}
+							}
+						}
+						continue
+					}
+				}
+				
+				// For duplicate key errors, it's already processed - not an error
+				if strings.Contains(errStr, "Duplicate entry") {
+					// Don't log - duplicate keys are normal during parallel processing
+					// This happens when multiple workers try to process the same block
+					// Still update our tracking
+					rai.lastProcessedSlot.Store(item.block.SlotNumber())
+					break
+				}
+				
+				// Non-recoverable error or max retries reached
+				slotNum := item.block.SlotNumber()
 				errors.Get().ProcessingError("BlockWorker", fmt.Sprintf("Worker%d", id),
-					fmt.Errorf("slot %d: %w", item.block.SlotNumber(), err))
-			} else {
-				// Update stats
-				rai.updateSequentialStats(item.block)
-				rai.lastProcessedSlot.Store(item.block.SlotNumber())
+					fmt.Errorf("failed to process block at slot %d after %d attempts: %w", slotNum, attempt+1, err))
+				
+				// Special handling for Byron-Shelley boundary errors
+				if slotNum >= 4492800 && slotNum <= 4493000 {
+					errors.Get().ProcessingError("BlockWorker", fmt.Sprintf("Worker%d.ByronShelley", id),
+						fmt.Errorf("error at boundary slot %d: %w", slotNum, err))
+					
+					// If this is Worker 4 and slot 4492900, add extra debugging
+					if id == 4 && slotNum == 4492900 {
+						errors.Get().ProcessingError("BlockWorker", "Worker4.Critical",
+							fmt.Errorf("Worker 4 failed at slot 4492900 again: %w", err))
+						
+						// Force connection recovery for Worker 4
+						rai.logToActivity("system", fmt.Sprintf("Forcing connection recovery for Worker %d", id))
+						if rai.connPoolManager != nil {
+							if recoverErr := rai.connPoolManager.RecoverConnection(id); recoverErr == nil {
+								if newConn, connErr := rai.connPoolManager.GetConnection(id); connErr == nil {
+									processor = processors.NewBlockProcessor(newConn)
+									rai.dbConnections[id] = processor
+									rai.logToActivity("system", fmt.Sprintf("Worker %d connection recovered, retrying block", id))
+									
+									// One more retry with fresh connection
+									time.Sleep(500 * time.Millisecond)
+									if retryErr := processor.ProcessBlock(rai.ctx, item.block, item.blockType); retryErr == nil {
+										rai.logToActivity("system", fmt.Sprintf("Worker %d processed slot %d after recovery", id, slotNum))
+										rai.updateSequentialStats(item.block)
+										rai.lastProcessedSlot.Store(slotNum)
+										break
+									}
+								}
+							}
+						}
+					}
+				}
+				
+				errors.Get().ProcessingError("BlockWorker", fmt.Sprintf("Worker%d", id),
+					fmt.Errorf("slot %d: %w", slotNum, err))
+				break
 			}
-			
+
 		case <-rai.ctx.Done():
-			log.Printf(" Worker %d: context cancelled", id)
+			rai.logToActivity("system", fmt.Sprintf("Worker %d: context cancelled", id))
 			return
 		}
 	}
 }
 
-
 // startReferenceChainSync starts ChainSync following reference pattern with smart resuming
 func (rai *ReferenceAlignedIndexer) startReferenceChainSync() error {
-	log.Println(" Starting reference ChainSync pattern")
+	rai.logToActivity("sync", "Starting reference ChainSync pattern")
 
 	// Build intersection points for smart resuming
 	startPoints, err := rai.buildIntersectionPoints()
@@ -1038,39 +1427,37 @@ func (rai *ReferenceAlignedIndexer) startReferenceChainSync() error {
 		return fmt.Errorf("failed to start ChainSync: %w", err)
 	}
 
-	log.Println("[OK] Reference ChainSync started successfully")
+	rai.logToActivity("sync", "Reference ChainSync started successfully")
 	return nil
 }
 
-
 // Performance monitoring - sequential processing
 func (rai *ReferenceAlignedIndexer) startPerformanceMonitoring() {
-	// Combined render loop with proper timing
+	// Stats update loop only - dashboard rendering is handled by dashboardUpdateLoop
 	go func() {
-		renderTicker := time.NewTicker(250 * time.Millisecond) // 4 FPS - smooth and efficient
-		defer renderTicker.Stop()
-		
-		statsTicker := time.NewTicker(3 * time.Second) // Less frequent stats updates
-		defer statsTicker.Stop()
-		
+		// Update stats on a regular interval
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+
 		// Update stats immediately
 		rai.updateStats()
-		
+
 		for {
 			select {
 			case <-rai.ctx.Done():
 				return
-			case <-renderTicker.C:
-				// Render frame with current data
-				if rai.dashboardEnabled.Load() {
-					rai.renderDashboard()
-				}
-			case <-statsTicker.C:
-				// Update stats calculations
+			case <-ticker.C:
+				// Update stats for dashboard to consume
 				rai.updateStats()
 			}
 		}
 	}()
+	
+	// Start keyboard input handler for dashboard controls
+	// Disabled - termdash handles its own keyboard input
+	// if rai.dashboardEnabled.Load() {
+	// 	go rai.handleKeyboardInput()
+	// }
 }
 
 // updateStats calculates performance statistics
@@ -1088,32 +1475,32 @@ func (rai *ReferenceAlignedIndexer) updateStats() {
 	// Force update on first call or if enough time has passed
 	if timeDiff >= 1.9 || rai.stats.lastBlockCount == 0 {
 		currentRate := float64(blocksDiff) / timeDiff
-		
+
 		// Handle first update where timeDiff might be 0
 		if timeDiff < 0.1 {
 			currentRate = 0
 		}
-		
+
 		// Track peak (but ignore unreasonable spikes)
 		if currentRate > rai.stats.peakBlocksPerSec && currentRate < 10000 {
 			rai.stats.peakBlocksPerSec = currentRate
 		}
-		
+
 		// Update all stats fields
 		rai.stats.lastStatsTime = now
 		rai.stats.lastBlockCount = currentBlocks
 		rai.stats.currentBlocksPerSec = currentRate
-		
+
 		// Also update other runtime stats
 		rai.stats.transactionsProcessed = atomic.LoadInt64(&rai.stats.transactionsProcessed)
 		rai.stats.batchesProcessed = atomic.LoadInt64(&rai.stats.batchesProcessed)
-		
+
 		// Update cached display values - these are what the dashboard shows
 		rai.stats.cachedBlockCount = currentBlocks
 		rai.stats.cachedSlot = rai.lastProcessedSlot.Load()
 		rai.stats.cachedTxCount = rai.stats.transactionsProcessed
 		rai.stats.cachedTipSlot = rai.tipSlot.Load()
-		
+
 		// Calculate tip distance with cached values
 		if rai.stats.cachedTipSlot > 0 && rai.stats.cachedSlot > 0 {
 			rai.stats.cachedTipDistance = rai.stats.cachedTipSlot - rai.stats.cachedSlot
@@ -1121,14 +1508,107 @@ func (rai *ReferenceAlignedIndexer) updateStats() {
 	}
 }
 
-func (rai *ReferenceAlignedIndexer) renderDashboard() {
-	// Prepare dashboard data
-	data := rai.prepareDashboardData()
+// handleKeyboardInput handles keyboard controls for the dashboard
+func (rai *ReferenceAlignedIndexer) handleKeyboardInput() {
+	// Set terminal to raw mode to capture single key presses
+	oldState, err := makeRaw()
+	if err != nil {
+		log.Printf("[WARNING] Failed to set terminal to raw mode: %v", err)
+		return
+	}
+	defer restoreTerminal(oldState)
 	
-	// Render using the new renderer
-	rai.dashboardRenderer.RenderFrame(data)
+	// Buffer for reading input
+	buf := make([]byte, 3)
+	
+	// Track last refresh time for debouncing
+	var lastRefreshTime time.Time
+	
+	for {
+		select {
+		case <-rai.ctx.Done():
+			return
+		default:
+			// Read with timeout
+			n, err := os.Stdin.Read(buf)
+			if err != nil || n == 0 {
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+			
+			// Handle key presses
+			switch {
+			case buf[0] == 'q' || buf[0] == 'Q':
+				// Quit
+				rai.logToActivity("system", "Dashboard quit requested...")
+				rai.cancel()
+				return
+				
+			case buf[0] == 27 && n > 1: // ESC sequence
+				if n == 3 && buf[1] == '[' {
+					switch buf[2] {
+					case 'A': // Up arrow
+						// Reserved for future scrolling implementation
+					case 'B': // Down arrow
+						// Reserved for future scrolling implementation
+					}
+				}
+				
+			case buf[0] == 'c' || buf[0] == 'C':
+				// Clear - reserved for future implementation
+				
+			case buf[0] == 'r' || buf[0] == 'R':
+				// Force refresh with debounce to prevent rapid consecutive renders
+				if time.Since(lastRefreshTime) > 100*time.Millisecond {
+					rai.renderDashboard()
+					lastRefreshTime = time.Now()
+				}
+			}
+		}
+	}
 }
 
+// makeRaw puts the terminal into raw mode and returns the previous state
+func makeRaw() (*terminalState, error) {
+	cmd := exec.Command("stty", "-g")
+	cmd.Stdin = os.Stdin
+	oldStateBytes, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	
+	oldState := &terminalState{
+		state: strings.TrimSpace(string(oldStateBytes)),
+	}
+	
+	// Set raw mode
+	cmd = exec.Command("stty", "raw", "-echo", "cbreak")
+	cmd.Stdin = os.Stdin
+	return oldState, cmd.Run()
+}
+
+// restoreTerminal restores the terminal to its previous state
+func restoreTerminal(oldState *terminalState) {
+	if oldState != nil {
+		cmd := exec.Command("stty", oldState.state)
+		cmd.Stdin = os.Stdin
+		cmd.Run()
+	}
+}
+
+// terminalState holds the terminal state for restoration
+type terminalState struct {
+	state string
+}
+
+func (rai *ReferenceAlignedIndexer) renderDashboard() {
+	// DISABLED - Using Bubble Tea dashboard now
+	// The Bubble Tea dashboard has its own render loop
+	return
+}
+
+// prepareDashboardData is deprecated - replaced by direct dashboard updates
+/*
 func (rai *ReferenceAlignedIndexer) prepareDashboardData() *dashboard.DashboardData {
 	// Use cached stats for display - read with mutex
 	rai.stats.mutex.RLock()
@@ -1139,7 +1619,7 @@ func (rai *ReferenceAlignedIndexer) prepareDashboardData() *dashboard.DashboardD
 	tipSlot := rai.stats.cachedTipSlot
 	tipDistance := rai.stats.cachedTipDistance
 	rai.stats.mutex.RUnlock()
-	
+
 	// If we haven't cached values yet, use real-time (for initial display)
 	if dbBlockCount == 0 {
 		dbBlockCount = atomic.LoadInt64(&rai.stats.blocksProcessed)
@@ -1149,11 +1629,11 @@ func (rai *ReferenceAlignedIndexer) prepareDashboardData() *dashboard.DashboardD
 			tipDistance = tipSlot - currentSlot
 		}
 	}
-	
+
 	// Get queue metrics
 	queueDepth := len(rai.blockQueue)
 	activeWorkers := rai.activeWorkers.Load()
-	
+
 	// Calculate era progress (only when slot changes)
 	data := &dashboard.DashboardData{
 		CurrentRate:   currentRate,
@@ -1169,16 +1649,16 @@ func (rai *ReferenceAlignedIndexer) prepareDashboardData() *dashboard.DashboardD
 		ActiveWorkers: activeWorkers,
 		TotalWorkers:  rai.blockWorkers,
 	}
-	
+
 	// Calculate era progress
 	rai.calculateEraProgress(data, currentSlot)
-	
+
 	// Get activities
 	data.Activities = rai.getRecentActivities()
-	
+
 	// Get errors
 	data.TotalErrors, data.RecentErrors = rai.getErrorData()
-	
+
 	return data
 }
 
@@ -1189,47 +1669,47 @@ func (rai *ReferenceAlignedIndexer) calculateEraProgress(data *dashboard.Dashboa
 	} else {
 		data.ByronProgress = (float64(currentSlot) / 4492799.0) * 100
 	}
-	
+
 	// Shelley
 	if currentSlot >= 16588738 {
 		data.ShelleyProgress = 100.0
 	} else if currentSlot >= 4492800 {
 		data.ShelleyProgress = ((float64(currentSlot) - 4492800) / (16588738 - 4492800)) * 100
 	}
-	
+
 	// Allegra
 	if currentSlot >= 23068794 {
 		data.AllegraProgress = 100.0
 	} else if currentSlot >= 16588738 {
 		data.AllegraProgress = ((float64(currentSlot) - 16588738) / (23068794 - 16588738)) * 100
 	}
-	
+
 	// Mary
 	if currentSlot >= 39916797 {
 		data.MaryProgress = 100.0
 	} else if currentSlot >= 23068794 {
 		data.MaryProgress = ((float64(currentSlot) - 23068794) / (39916797 - 23068794)) * 100
 	}
-	
+
 	// Alonzo
 	if currentSlot >= 72316797 {
 		data.AlonzoProgress = 100.0
 	} else if currentSlot >= 39916797 {
 		data.AlonzoProgress = ((float64(currentSlot) - 39916797) / (72316797 - 39916797)) * 100
 	}
-	
+
 	// Babbage
 	if currentSlot >= 133660800 {
 		data.BabbageProgress = 100.0
 	} else if currentSlot >= 72316797 {
 		data.BabbageProgress = ((float64(currentSlot) - 72316797) / (133660800 - 72316797)) * 100
 	}
-	
+
 	// Conway
 	if currentSlot >= 133660800 {
 		data.ConwayProgress = 5.0 // Early stage
 	}
-	
+
 	// Determine current era
 	if currentSlot >= 133660800 {
 		data.CurrentEra = "Conway"
@@ -1253,7 +1733,7 @@ func (rai *ReferenceAlignedIndexer) calculateEraProgress(data *dashboard.Dashboa
 		data.CurrentEra = "Byron"
 		data.EraProgress = data.ByronProgress
 	}
-	
+
 	// Add bulk sync indicator
 	if rai.isBulkSync.Load() {
 		data.CurrentEra = data.CurrentEra + " [BULK SYNC]"
@@ -1263,7 +1743,7 @@ func (rai *ReferenceAlignedIndexer) calculateEraProgress(data *dashboard.Dashboa
 func (rai *ReferenceAlignedIndexer) getRecentActivities() []dashboard.ActivityData {
 	rai.activityFeed.mutex.RLock()
 	defer rai.activityFeed.mutex.RUnlock()
-	
+
 	var activities []dashboard.ActivityData
 	for _, entry := range rai.activityFeed.entries {
 		prefix := "[INFO]"
@@ -1283,95 +1763,267 @@ func (rai *ReferenceAlignedIndexer) getRecentActivities() []dashboard.ActivityDa
 		case "error":
 			prefix = "[ERROR]"
 		}
-		
+
 		message := entry.Message
 		maxLen := 45 - len(prefix) - 1
 		if len(message) > maxLen {
 			message = message[:maxLen-3] + "..."
 		}
-		
+
 		activities = append(activities, dashboard.ActivityData{
 			Time:    entry.Timestamp.Format("15:04:05"),
 			Type:    prefix,
 			Message: message,
 		})
 	}
-	
+
 	return activities
 }
 
 func (rai *ReferenceAlignedIndexer) getErrorData() (int64, []dashboard.ErrorData) {
-	rai.errorStats.errorMutex.RLock()
-	defer rai.errorStats.errorMutex.RUnlock()
+	// Get errors from the unified error system
+	unifiedSystem := errors.Get()
+	stats := unifiedSystem.GetStatistics()
 	
-	totalErrors := rai.errorStats.totalErrors.Load()
+	totalErrors := stats["total_errors"].(int64)
+	
+	// If dashboard error handler is available, use it for better organization
+	if rai.dashboardErrorHandler != nil {
+		dashboardErrors := rai.dashboardErrorHandler.GetDashboardErrors(5)
+		return totalErrors, dashboardErrors
+	}
+	
+	// Fallback to unified system errors
+	recentErrors := unifiedSystem.GetRecentErrors(5)
+	
 	var errors []dashboard.ErrorData
-	
 	maxDisplay := 5
-	if len(rai.errorStats.recentErrors) < maxDisplay {
-		maxDisplay = len(rai.errorStats.recentErrors)
-	}
+	displayCount := 0
 	
-	startIdx := len(rai.errorStats.recentErrors) - maxDisplay
-	if startIdx < 0 {
-		startIdx = 0
+	// Filter out duplicate key errors at display time as additional safety
+	for _, err := range recentErrors {
+		// Skip duplicate key errors even if they somehow made it through
+		if strings.Contains(err.Message, "Error 1062") || 
+		   strings.Contains(err.Message, "Duplicate entry") ||
+		   strings.Contains(err.Message, "duplicate key") {
+			continue
+		}
+		
+		message := fmt.Sprintf("%s.%s: %s", err.Component, err.Operation, err.Message)
+		if len(message) > 50 {
+			message = message[:47] + "..."
+		}
+
+		errors = append(errors, dashboard.ErrorData{
+			Time:    err.Timestamp.Format("15:04:05"),
+			Count:   int(err.Count),
+			Message: message,
+		})
+		
+		displayCount++
+		if displayCount >= maxDisplay {
+			break
+		}
 	}
+
+	return totalErrors, errors
+}
+*/
+
+// dashboardUpdateLoop periodically updates the termdash dashboard with fresh data
+func (rai *ReferenceAlignedIndexer) dashboardUpdateLoop() {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-rai.ctx.Done():
+			return
+		case <-ticker.C:
+			if !rai.dashboardEnabled.Load() || rai.dashboard == nil {
+				continue
+			}
+			
+			// Get current stats
+			rai.stats.mutex.RLock()
+			currentRate := rai.stats.currentBlocksPerSec
+			peakRate := rai.stats.peakBlocksPerSec
+			dbBlockCount := rai.stats.cachedBlockCount
+			currentSlot := rai.stats.cachedSlot
+			tipSlot := rai.stats.cachedTipSlot
+			runtime := time.Since(rai.stats.startTime)
+			rai.stats.mutex.RUnlock()
+
+			// If we haven't cached values yet, use real-time
+			if dbBlockCount == 0 {
+				dbBlockCount = atomic.LoadInt64(&rai.stats.blocksProcessed)
+				currentSlot = rai.lastProcessedSlot.Load()
+				tipSlot = rai.tipSlot.Load()
+			}
+
+			// Get current era
+			currentEra := rai.getEraFromSlot(currentSlot)
+			
+			// Update performance metrics
+			rai.dashboard.UpdatePerformance(
+				fmt.Sprintf("%.1f b/s", currentRate),
+				currentRate,
+				peakRate,
+				dbBlockCount,
+				currentSlot,
+				tipSlot,
+				rai.getMemoryUsage(),
+				rai.getCPUUsage(),
+				runtime,
+				currentEra,
+			)
+
+			// Update era progress
+			rai.updateEraProgress(currentSlot)
+			
+			// Update errors
+			rai.updateDashboardErrors()
+		}
+	}
+}
+
+// updateEraProgress updates the era progress bars in the dashboard
+func (rai *ReferenceAlignedIndexer) updateEraProgress(currentSlot uint64) {
+	if rai.dashboard == nil {
+		return
+	}
+
+	// Byron
+	byronProgress := 0.0
+	if currentSlot >= 4492800 {
+		byronProgress = 100.0
+	} else {
+		byronProgress = (float64(currentSlot) / 4492799.0) * 100
+	}
+	rai.dashboard.UpdateEraProgress("Byron", byronProgress)
+
+	// Shelley
+	shelleyProgress := 0.0
+	if currentSlot >= 16588738 {
+		shelleyProgress = 100.0
+	} else if currentSlot >= 4492800 {
+		shelleyProgress = ((float64(currentSlot) - 4492800) / (16588738 - 4492800)) * 100
+	}
+	rai.dashboard.UpdateEraProgress("Shelley", shelleyProgress)
+
+	// Allegra
+	allegraProgress := 0.0
+	if currentSlot >= 23068794 {
+		allegraProgress = 100.0
+	} else if currentSlot >= 16588738 {
+		allegraProgress = ((float64(currentSlot) - 16588738) / (23068794 - 16588738)) * 100
+	}
+	rai.dashboard.UpdateEraProgress("Allegra", allegraProgress)
+
+	// Mary
+	maryProgress := 0.0
+	if currentSlot >= 39916797 {
+		maryProgress = 100.0
+	} else if currentSlot >= 23068794 {
+		maryProgress = ((float64(currentSlot) - 23068794) / (39916797 - 23068794)) * 100
+	}
+	rai.dashboard.UpdateEraProgress("Mary", maryProgress)
+
+	// Alonzo
+	alonzoProgress := 0.0
+	if currentSlot >= 72316797 {
+		alonzoProgress = 100.0
+	} else if currentSlot >= 39916797 {
+		alonzoProgress = ((float64(currentSlot) - 39916797) / (72316797 - 39916797)) * 100
+	}
+	rai.dashboard.UpdateEraProgress("Alonzo", alonzoProgress)
+
+	// Babbage
+	babbageProgress := 0.0
+	if currentSlot >= 133660800 {
+		babbageProgress = 100.0
+	} else if currentSlot >= 72316797 {
+		babbageProgress = ((float64(currentSlot) - 72316797) / (133660800 - 72316797)) * 100
+	}
+	rai.dashboard.UpdateEraProgress("Babbage", babbageProgress)
+
+	// Conway
+	conwayProgress := 0.0
+	if currentSlot >= 133660800 {
+		conwayProgress = 5.0 // Early stage
+	}
+	rai.dashboard.UpdateEraProgress("Conway", conwayProgress)
+}
+
+// updateDashboardErrors updates the error display in the dashboard
+func (rai *ReferenceAlignedIndexer) updateDashboardErrors() {
+	if rai.dashboard == nil {
+		return
+	}
+
+	// Get errors from the unified error system
+	unifiedSystem := errors.Get()
+	stats := unifiedSystem.GetStatistics()
 	
-	for i := startIdx; i < len(rai.errorStats.recentErrors); i++ {
-		err := rai.errorStats.recentErrors[i]
-		message := err.Message
+	totalErrors := stats["total_errors"].(int64)
+	
+	// Get categorized errors
+	categorizedErrors := make([]string, 0, 5)
+	
+	// Get recent errors
+	recentErrors := unifiedSystem.GetRecentErrors(5)
+	for _, err := range recentErrors {
+		if err.Component == "" || err.Operation == "" {
+			continue
+		}
+		
+		message := fmt.Sprintf("%s.%s: %s", err.Component, err.Operation, err.Message)
 		if len(message) > 50 {
 			message = message[:47] + "..."
 		}
 		
-		errors = append(errors, dashboard.ErrorData{
-			Time:    err.Timestamp.Format("15:04:05"),
-			Count:   err.Count,
-			Message: message,
-		})
+		categorizedErrors = append(categorizedErrors, 
+			fmt.Sprintf("%s [%d] %s", err.Timestamp.Format("15:04:05"), int(err.Count), message))
 	}
 	
-	// Export errors to file if needed
-	if len(rai.errorStats.recentErrors) > 0 {
-		rai.exportErrorsToFile(rai.errorStats.recentErrors)
-	}
-	
-	return totalErrors, errors
+	rai.dashboard.UpdateErrors(int(totalErrors), categorizedErrors)
 }
 
-
-// Export all errors to a file for easy copying
-func (rai *ReferenceAlignedIndexer) exportErrorsToFile(errors []ErrorEntry) {
-	file, err := os.Create("errors.log")
-	if err != nil {
-		return // Fail silently
+// getEraFromSlot determines the current era based on slot number
+func (rai *ReferenceAlignedIndexer) getEraFromSlot(slot uint64) string {
+	if slot >= 133660800 {
+		return "Conway"
+	} else if slot >= 72316797 {
+		return "Babbage"
+	} else if slot >= 39916797 {
+		return "Alonzo"
+	} else if slot >= 23068794 {
+		return "Mary"
+	} else if slot >= 16588738 {
+		return "Allegra"
+	} else if slot >= 4492800 {
+		return "Shelley"
 	}
-	defer file.Close()
-
-	file.WriteString("NECTAR INDEXER ERROR LOG\n")
-	file.WriteString("========================\n")
-	file.WriteString(fmt.Sprintf("Generated: %s\n", time.Now().Format("2006-01-02 15:04:05")))
-	file.WriteString(fmt.Sprintf("Total Errors: %d\n\n", len(errors)))
-
-	for i, err := range errors {
-		file.WriteString(fmt.Sprintf("[%d] %s - %s (Count: %d)\n",
-			i+1, err.Timestamp.Format("2006-01-02 15:04:05"), err.Type, err.Count))
-		file.WriteString(fmt.Sprintf("    %s\n\n", err.Message))
-	}
-
-	file.WriteString("END OF ERROR LOG\n")
+	return "Byron"
 }
 
+// exportErrorsToFile is deprecated - unified error system handles its own logging
 
 func (rai *ReferenceAlignedIndexer) addActivityEntry(entryType, message string, data map[string]interface{}) {
 	if !rai.dashboardEnabled.Load() {
 		return
 	}
 
-	// Simple deduplication - skip if same as last message
+	// Route to dashboard
+	if rai.dashboard != nil {
+		rai.dashboard.AddActivity(entryType, message)
+		return
+	}
+
+	// Fallback to old system (shouldn't happen)
 	rai.activityFeed.mutex.Lock()
 	defer rai.activityFeed.mutex.Unlock()
-	
+
 	if message == rai.activityFeed.lastMessage {
 		return // Skip duplicate
 	}
@@ -1390,41 +2042,33 @@ func (rai *ReferenceAlignedIndexer) addActivityEntry(entryType, message string, 
 	}
 }
 
+// addErrorEntry is deprecated - all errors now go through unified error system
+// This function is kept only for compatibility with connection error handler
 func (rai *ReferenceAlignedIndexer) addErrorEntry(errorType, message string) {
-	now := time.Now()
-	rai.errorStats.lastErrorTime.Store(&now)
-	rai.errorStats.totalErrors.Add(1)
-
-	entry := ErrorEntry{
-		Timestamp: now,
-		Type:      errorType,
-		Message:   message,
-		Count:     1,
+	// Route to unified error system
+	unifiedSystem := errors.Get()
+	
+	// Map errorType to ErrorType enum
+	var errType errors.ErrorType
+	switch errorType {
+	case "Network":
+		errType = errors.ErrorTypeNetwork
+	case "Database":
+		errType = errors.ErrorTypeDatabase
+	case "BlockFetch":
+		errType = errors.ErrorTypeBlockFetch
+	case "Processing":
+		errType = errors.ErrorTypeProcessing
+	default:
+		errType = errors.ErrorTypeSystem
 	}
-
-	rai.errorStats.errorMutex.Lock()
-	// Check if this error type already exists, increment count
-	found := false
-	for i := range rai.errorStats.recentErrors {
-		if rai.errorStats.recentErrors[i].Type == errorType {
-			rai.errorStats.recentErrors[i].Count++
-			rai.errorStats.recentErrors[i].Timestamp = now
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		rai.errorStats.recentErrors = append(rai.errorStats.recentErrors, entry)
-		if len(rai.errorStats.recentErrors) > 10 {
-			rai.errorStats.recentErrors = rai.errorStats.recentErrors[1:]
-		}
-	}
-	rai.errorStats.errorMutex.Unlock()
+	
+	// Log to unified system
+	unifiedSystem.LogError(errType, "Connection", "Handler", message)
 }
 
 func (rai *ReferenceAlignedIndexer) Shutdown() {
-	log.Println(" Shutting down Nectar indexer...")
+	rai.logToActivity("system", "Shutting down Nectar indexer...")
 
 	// Signal shutdown to all goroutines
 	rai.cancel()
@@ -1432,20 +2076,20 @@ func (rai *ReferenceAlignedIndexer) Shutdown() {
 	// Close ouroboros connection first, with proper null check and thread safety
 	rai.connMutex.Lock()
 	if rai.oConn != nil {
-		log.Println(" Closing ouroboros connection...")
+		rai.logToActivity("system", "Closing ouroboros connection...")
 		if err := rai.oConn.Close(); err != nil {
-			log.Printf("[WARNING] Error closing ouroboros connection: %v", err)
+			errors.Get().ProcessingError("Connection", "Close", fmt.Errorf("error closing ouroboros connection: %w", err))
 		}
 		rai.oConn = nil // Prevent double-close
 	}
 	rai.connMutex.Unlock()
 
-	// Clean up dashboard renderer
-	if rai.dashboardRenderer != nil {
-		rai.dashboardRenderer.Cleanup()
+	// Clean up dashboard
+	if rai.dashboard != nil {
+		rai.dashboard.Stop()
 	}
-	
-	log.Println("[OK] Nectar indexer shutdown complete!")
+
+	rai.logToActivity("system", "Nectar indexer shutdown complete!")
 }
 
 // performFullRollback rolls back all blocks after a given slot
@@ -1456,7 +2100,10 @@ func (rai *ReferenceAlignedIndexer) performFullRollback(tx *gorm.DB, slot uint64
 		return fmt.Errorf("failed to delete blocks after slot %d: %w", slot, result.Error)
 	}
 
-	log.Printf(" Full rollback: deleted %d blocks after slot %d", result.RowsAffected, slot)
+	// Log through activity feed
+	if rai != nil {
+		rai.logToActivity("rollback", fmt.Sprintf("Full rollback: deleted %d blocks after slot %d", result.RowsAffected, slot))
+	}
 	return nil
 }
 
@@ -1471,7 +2118,7 @@ func (rai *ReferenceAlignedIndexer) cleanupOrphanedData(tx *gorm.DB, maxBlockHas
 	if err := tx.Where("hash = ?", maxBlockHash).First(&targetBlock).Error; err != nil {
 		return fmt.Errorf("failed to get target block: %w", err)
 	}
-	
+
 	maxEpoch = *targetBlock.EpochNo
 	maxSlot = *targetBlock.SlotNo
 
@@ -1479,22 +2126,26 @@ func (rai *ReferenceAlignedIndexer) cleanupOrphanedData(tx *gorm.DB, maxBlockHas
 
 	// Delete epoch records beyond the current max
 	if result := tx.Where("no > ?", maxEpoch).Delete(&models.Epoch{}); result.Error != nil {
-		log.Printf("[WARNING] Failed to cleanup epoch records: %v", result.Error)
+		// Route through unified error system
+		errors.Get().DatabaseError("Rollback", "CleanupEpoch", fmt.Errorf("failed to cleanup epoch records: %w", result.Error))
 	}
 
 	// Delete ada_pots records for slots that no longer exist
 	if result := tx.Where("slot_no > ?", maxSlot).Delete(&models.AdaPots{}); result.Error != nil {
-		log.Printf("[WARNING] Failed to cleanup ada_pots records: %v", result.Error)
+		// Route through unified error system
+		errors.Get().DatabaseError("Rollback", "CleanupAdaPots", fmt.Errorf("failed to cleanup ada_pots records: %w", result.Error))
 	}
 
 	// Delete epoch_param records for epochs that no longer exist
 	if result := tx.Where("epoch_no > ?", maxEpoch).Delete(&models.EpochParam{}); result.Error != nil {
-		log.Printf("[WARNING] Failed to cleanup epoch_param records: %v", result.Error)
+		// Route through unified error system
+		errors.Get().DatabaseError("Rollback", "CleanupEpochParam", fmt.Errorf("failed to cleanup epoch_param records: %w", result.Error))
 	}
 
 	// Clean up rewards that reference non-existent epochs
 	if result := tx.Where("earned_epoch > ?", maxEpoch).Delete(&models.Reward{}); result.Error != nil {
-		log.Printf("[WARNING] Failed to cleanup reward records: %v", result.Error)
+		// Route through unified error system
+		errors.Get().DatabaseError("Rollback", "CleanupReward", fmt.Errorf("failed to cleanup reward records: %w", result.Error))
 	}
 
 	return nil
@@ -1521,8 +2172,8 @@ func (rai *ReferenceAlignedIndexer) trackTipDistance(currentSlot uint64, tip cha
 	if distance > 1000 {
 		lastLog := rai.lastChainTipLog.Load()
 		if lastLog == nil || time.Since(*lastLog) > 10*time.Second {
-			log.Printf(" Chain tip: slot %d (block %d) - We're %d slots behind",
-				tip.Point.Slot, tip.BlockNumber, distance)
+			rai.logToActivity("sync", fmt.Sprintf("Chain tip: slot %d (block %d) - We're %d slots behind",
+				tip.Point.Slot, tip.BlockNumber, distance))
 			now := time.Now()
 			rai.lastChainTipLog.Store(&now)
 		}
@@ -1597,7 +2248,6 @@ func (rai *ReferenceAlignedIndexer) formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh %dm", hours, minutes)
 }
 
-
 func (rai *ReferenceAlignedIndexer) getLastProcessedSlot() (uint64, error) {
 	var lastSlot sql.NullInt64
 
@@ -1628,25 +2278,25 @@ func (rai *ReferenceAlignedIndexer) buildIntersectionPoints() ([]common.Point, e
 	// Get the last processed slot from database
 	lastSlot, err := rai.getLastProcessedSlot()
 	if err != nil {
-		log.Printf("[WARNING] Could not get last processed slot, starting from genesis: %v", err)
+		rai.logToActivity("sync", fmt.Sprintf("Could not get last processed slot, starting from genesis: %v", err))
 		return []common.Point{common.NewPointOrigin()}, nil
 	}
 
 	if lastSlot == 0 {
-		log.Println("Starting fresh sync from genesis (no previous blocks found)")
+		rai.logToActivity("sync", "Starting fresh sync from genesis (no previous blocks found)")
 		return []common.Point{common.NewPointOrigin()}, nil
 	}
 
 	// Smart resumption - we have existing data!
-	log.Printf("SMART RESUME ACTIVATED!")
-	log.Printf("Found existing blockchain data up to slot %d", lastSlot+20) // +20 because we subtract safety margin
-	log.Printf("Resuming from slot %d (with 20-slot safety margin for rollbacks)", lastSlot)
+	rai.logToActivity("sync", "SMART RESUME ACTIVATED!")
+	rai.logToActivity("sync", fmt.Sprintf("Found existing blockchain data up to slot %d", lastSlot+20)) // +20 because we subtract safety margin
+	rai.logToActivity("sync", fmt.Sprintf("Resuming from slot %d (with 20-slot safety margin for rollbacks)", lastSlot))
 
 	// Calculate approximate blocks being skipped
 	var blocksSkipped int64
 	err = rai.dbConnections[0].GetDB().Model(&models.Block{}).Count(&blocksSkipped).Error
 	if err == nil {
-		log.Printf("Skipping %d already-processed blocks - instant startup!", blocksSkipped)
+		rai.logToActivity("sync", fmt.Sprintf("Skipping %d already-processed blocks - instant startup!", blocksSkipped))
 	}
 
 	// SAFE RESUMPTION: Get most recent block that definitely exists
@@ -1660,17 +2310,18 @@ func (rai *ReferenceAlignedIndexer) buildIntersectionPoints() ([]common.Point, e
 		// SUCCESS: We have the actual latest block to resume from
 		point := common.NewPoint(*resumeBlock.SlotNo, resumeBlock.Hash)
 		points = append(points, point)
-		log.Printf("RESUMING from latest block: slot %d, hash %x", *resumeBlock.SlotNo, resumeBlock.Hash[:8])
+		rai.logToActivity("sync", fmt.Sprintf("RESUMING from latest block: slot %d, hash %x", *resumeBlock.SlotNo, resumeBlock.Hash[:8]))
 
 		// Verify this makes sense (should be close to our calculated lastSlot)
 		slotDiff := int64(*resumeBlock.SlotNo) - int64(lastSlot)
 		if slotDiff > 100 || slotDiff < -100 {
-			log.Printf("[WARNING] Resume slot %d differs from calculated %d by %d slots", *resumeBlock.SlotNo, lastSlot, slotDiff)
+			errors.Get().ProcessingError("Sync", "ResumeVerify", 
+				fmt.Errorf("resume slot %d differs from calculated %d by %d slots", *resumeBlock.SlotNo, lastSlot, slotDiff))
 		}
 	} else {
 		// SAFE FALLBACK: Only use era intersection if we have NO blocks at all
-		log.Printf("[WARNING] Could not find any blocks in database: %v", err)
-		log.Printf("Starting fresh sync from genesis")
+		errors.Get().ProcessingError("Sync", "FindBlocks", fmt.Errorf("could not find any blocks in database: %w", err))
+		rai.logToActivity("sync", "Starting fresh sync from genesis")
 		points = append(points, common.NewPointOrigin())
 		return points, nil
 	}

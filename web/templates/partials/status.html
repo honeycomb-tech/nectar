@@ -1,0 +1,11 @@
+<div class="flex justify-between items-center">
+    <div>
+        <span class="text-green-400">⚡ Running</span>
+        <span class="ml-4">Era: <span class="font-bold">{{.CurrentEra}}</span></span>
+    </div>
+    <div>
+        <span>Slot: <span class="font-mono">{{.CurrentSlot}}</span> / <span class="font-mono">{{.TipSlot}}</span></span>
+        <span class="ml-4">Sync: <span class="font-bold">{{printf "%.1f" .SyncPercentage}}%</span></span>
+        <span class="ml-4">Speed: <span class="font-bold">{{printf "%.1f" .BlocksPerSec}} b/s</span></span>
+    </div>
+</div>

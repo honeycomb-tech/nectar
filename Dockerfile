@@ -38,8 +38,8 @@ ENV CARDANO_NETWORK_MAGIC=764824073
 ENV DB_CONNECTION_POOL=8
 ENV WORKER_COUNT=8
 
-# Expose metrics port
-EXPOSE 9090
+# Expose metrics port and web dashboard port
+EXPOSE 9090 8080
 
 # Run the indexer
 CMD ["./nectar"]

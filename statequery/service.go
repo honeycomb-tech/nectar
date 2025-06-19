@@ -43,13 +43,13 @@ func DefaultConfig() Config {
 			networkMagic = uint32(magic)
 		}
 	}
-	
+
 	// Get socket path from environment
 	socketPath := os.Getenv("CARDANO_NODE_SOCKET")
 	if socketPath == "" {
 		socketPath = "/opt/cardano/cnode/sockets/node.socket"
 	}
-	
+
 	return Config{
 		SocketPath:      socketPath,
 		NetworkMagic:    networkMagic,
@@ -79,7 +79,7 @@ type Service struct {
 // New creates a new LocalStateQuery service
 func New(db *gorm.DB, config Config) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	s := &Service{
 		config:     config,
 		db:         db,
@@ -94,16 +94,16 @@ func New(db *gorm.DB, config Config) *Service {
 // Start begins the state query service
 func (s *Service) Start() error {
 	log.Println(" Starting LocalStateQuery service...")
-	
+
 	// Connect to node
 	if err := s.connect(); err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
-	
+
 	// Start periodic queries
 	s.wg.Add(1)
 	go s.queryLoop()
-	
+
 	log.Println("[OK] LocalStateQuery service started")
 	return nil
 }
@@ -113,13 +113,13 @@ func (s *Service) Stop() error {
 	log.Println(" Stopping LocalStateQuery service...")
 	s.cancel()
 	s.wg.Wait()
-	
+
 	s.mu.Lock()
 	if s.oConn != nil {
 		s.oConn.Close()
 	}
 	s.mu.Unlock()
-	
+
 	return nil
 }
 
@@ -130,7 +130,7 @@ func (s *Service) connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to socket: %w", err)
 	}
-	
+
 	// Create ouroboros connection with LocalStateQuery
 	oConn, err := ouroboros.New(
 		ouroboros.WithConnection(conn),
@@ -144,27 +144,27 @@ func (s *Service) connect() error {
 		conn.Close()
 		return fmt.Errorf("failed to create ouroboros connection: %w", err)
 	}
-	
+
 	s.mu.Lock()
 	s.oConn = oConn
 	s.lsqClient = oConn.LocalStateQuery().Client
 	s.mu.Unlock()
-	
+
 	return nil
 }
 
 // queryLoop runs periodic queries
 func (s *Service) queryLoop() {
 	defer s.wg.Done()
-	
+
 	// Initial query
 	if err := s.runQueries(); err != nil {
 		log.Printf("[WARNING] Initial query failed: %v", err)
 	}
-	
+
 	ticker := time.NewTicker(s.config.QueryInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -180,24 +180,24 @@ func (s *Service) queryLoop() {
 // runQueries executes all state queries
 func (s *Service) runQueries() error {
 	log.Printf(" State query service: Starting queries...")
-	
+
 	s.mu.RLock()
 	client := s.lsqClient
 	s.mu.RUnlock()
-	
+
 	if client == nil {
 		return fmt.Errorf("no client connection")
 	}
-	
+
 	// Get current epoch
 	epochNoInt, err := client.GetEpochNo()
 	if err != nil {
 		return fmt.Errorf("failed to get epoch: %w", err)
 	}
 	epochNo := uint32(epochNoInt)
-	
+
 	log.Printf(" Running state queries for epoch %d", epochNo)
-	
+
 	// Check if we're connected to a live node while doing historical sync
 	// The state query socket might be connected to live mainnet (epoch 500+)
 	// while the sync socket is processing Byron (epoch 0-207)
@@ -209,7 +209,7 @@ func (s *Service) runQueries() error {
 		if err == nil && currentSlot > 0 {
 			// Calculate epoch from slot (432000 slots per epoch)
 			currentEpoch = uint32(currentSlot / 432000)
-			
+
 			if currentEpoch < 208 && epochNo > 400 {
 				// We're syncing Byron but state query sees mainnet tip
 				log.Printf("[WARNING] Historical sync detected: DB at epoch %d but state query sees epoch %d", currentEpoch, epochNo)
@@ -218,13 +218,13 @@ func (s *Service) runQueries() error {
 			}
 		}
 	}
-	
+
 	// Only process if epoch has changed
 	if epochNo <= s.lastEpoch {
 		log.Printf(" Epoch %d already processed, skipping", epochNo)
 		return nil
 	}
-	
+
 	// Query stake distribution (only for Shelley era and later)
 	// Byron (epochs 0-207) has no stake pools or delegation
 	if epochNo >= 208 {
@@ -232,7 +232,7 @@ func (s *Service) runQueries() error {
 			log.Printf("[WARNING] Failed to query stake distribution: %v", err)
 		}
 	}
-	
+
 	// Query rewards (only for Shelley era and later)
 	// Rewards start after epoch 210 in Shelley
 	if epochNo >= 210 {
@@ -240,14 +240,14 @@ func (s *Service) runQueries() error {
 			log.Printf("[WARNING] Failed to query rewards: %v", err)
 		}
 	}
-	
+
 	// Query treasury/reserve from epoch state (only for Shelley era and later)
 	if epochNo >= 208 {
 		if err := s.queryTreasuryReserve(epochNo); err != nil {
 			log.Printf("[WARNING] Failed to query treasury/reserve: %v", err)
 		}
 	}
-	
+
 	s.lastEpoch = epochNo
 	return nil
 }
@@ -259,26 +259,26 @@ func (s *Service) queryStakeDistribution(epochNo uint32) error {
 		log.Printf(" Skipping stake distribution for Byron epoch %d", epochNo)
 		return nil
 	}
-	
+
 	log.Printf(" Querying stake distribution for epoch %d", epochNo)
-	
+
 	s.mu.RLock()
 	client := s.lsqClient
 	s.mu.RUnlock()
-	
+
 	// Get stake distribution
 	stakeDistribution, err := client.GetStakeDistribution()
 	if err != nil {
 		return fmt.Errorf("failed to get stake distribution: %w", err)
 	}
-	
+
 	// Debug: Check if we're getting stake distribution in Byron
 	if epochNo < 208 && len(stakeDistribution.Results) > 0 {
-		log.Printf("[WARNING] WARNING: Got %d pool entries for Byron epoch %d - this shouldn't happen!", 
+		log.Printf("[WARNING] WARNING: Got %d pool entries for Byron epoch %d - this shouldn't happen!",
 			len(stakeDistribution.Results), epochNo)
 		return nil // Don't process Byron "pools"
 	}
-	
+
 	// Start transaction
 	tx := s.db.Begin()
 	defer func() {
@@ -286,13 +286,13 @@ func (s *Service) queryStakeDistribution(epochNo uint32) error {
 			tx.Rollback()
 		}
 	}()
-	
+
 	// Process each pool's stake
 	count := 0
 	for poolId, stakeInfo := range stakeDistribution.Results {
 		// Get pool ID bytes directly (poolId is already a [28]byte array)
 		poolBytes := poolId[:]
-		
+
 		// Get pool hash ID
 		var poolHash models.PoolHash
 		if err := tx.Where("hash_raw = ?", poolBytes).First(&poolHash).Error; err != nil {
@@ -300,7 +300,7 @@ func (s *Service) queryStakeDistribution(epochNo uint32) error {
 			// Don't log as it creates thousands of warnings
 			continue
 		}
-		
+
 		// Calculate stake amount from fraction
 		// Note: This is simplified - real calculation needs total stake
 		// Convert cbor.Rat to big.Rat
@@ -310,7 +310,7 @@ func (s *Service) queryStakeDistribution(epochNo uint32) error {
 			stakeFraction = big.NewRat(1, 1) // Placeholder for now
 		}
 		stakeAmount := s.calculateStakeAmount(stakeFraction)
-		
+
 		// For now, create a single epoch_stake entry per pool
 		// In reality, we'd need individual delegator amounts
 		// Use a placeholder stake address for now
@@ -321,18 +321,18 @@ func (s *Service) queryStakeDistribution(epochNo uint32) error {
 			EpochNo:  epochNo,
 			AddrHash: placeholderAddr, // Placeholder - need actual delegator addresses
 		}
-		
+
 		if err := tx.Create(epochStake).Error; err != nil {
 			log.Printf("[WARNING] Failed to create epoch stake: %v", err)
 			continue
 		}
 		count++
 	}
-	
+
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit stake distribution: %w", err)
 	}
-	
+
 	log.Printf("[OK] Stored %d stake distribution entries for epoch %d", count, epochNo)
 	return nil
 }
@@ -344,22 +344,22 @@ func (s *Service) queryRewards(epochNo uint32) error {
 		log.Printf(" Skipping rewards for epoch %d (rewards start at 210)", epochNo)
 		return nil
 	}
-	
+
 	log.Printf(" Querying rewards for epoch %d", epochNo)
-	
+
 	// Note: The rewards query is incomplete in gouroboros (TODO #858)
 	// For now, we'll create placeholder logic
-	
+
 	// In a real implementation, you would:
 	// 1. Get all stake addresses
 	// 2. Query rewards for each address
 	// 3. Store in the reward table
-	
+
 	log.Printf("[WARNING] Rewards query not fully implemented in gouroboros (TODO #858)")
-	
+
 	// TODO: Implement actual rewards querying from ledger state
 	// Rewards calculation will be added when we integrate with the actual reward system
-	
+
 	return nil
 }
 
@@ -370,13 +370,13 @@ func (s *Service) queryTreasuryReserve(epochNo uint32) error {
 		log.Printf(" Skipping treasury/reserve for Byron epoch %d", epochNo)
 		return nil
 	}
-	
+
 	log.Printf(" Querying treasury/reserve for epoch %d", epochNo)
-	
+
 	s.mu.RLock()
 	client := s.lsqClient
 	s.mu.RUnlock()
-	
+
 	// Try to get protocol parameters which might include treasury info
 	protocolParams, err := client.GetCurrentProtocolParams()
 	if err != nil {
@@ -384,7 +384,7 @@ func (s *Service) queryTreasuryReserve(epochNo uint32) error {
 	} else {
 		s.processProtocolParams(protocolParams)
 	}
-	
+
 	// Try debug epoch state (contains treasury/reserve but returns raw CBOR)
 	// Note: This is incomplete in gouroboros (TODO #863)
 	debugState, err := client.DebugEpochState()
@@ -394,7 +394,7 @@ func (s *Service) queryTreasuryReserve(epochNo uint32) error {
 		// Would need CBOR parsing here
 		log.Printf(" Debug epoch state type: %T", debugState)
 	}
-	
+
 	// Try reward provenance (may contain treasury data)
 	// Note: This is incomplete in gouroboros (TODO #866)
 	rewardProvenance, err := client.GetRewardProvenance()
@@ -403,7 +403,7 @@ func (s *Service) queryTreasuryReserve(epochNo uint32) error {
 	} else {
 		log.Printf(" Reward provenance type: %T", rewardProvenance)
 	}
-	
+
 	log.Printf("[WARNING] Treasury/reserve queries not fully implemented in gouroboros")
 	return nil
 }
@@ -429,19 +429,19 @@ func (s *Service) processProtocolParams(params interface{}) {
 func (s *Service) calculateStakeAmount(fraction *big.Rat) uint64 {
 	// This is simplified - in reality you'd need the total stake
 	// to calculate: amount = fraction * totalStake
-	
+
 	// For now, return a placeholder
 	// Total ADA supply is ~45 billion, so total stake is less
 	totalStake := uint64(35_000_000_000_000_000) // 35B ADA in lovelace
-	
+
 	if fraction == nil {
 		return 0
 	}
-	
+
 	// Calculate: amount = fraction * totalStake
 	numerator := new(big.Int).Mul(fraction.Num(), big.NewInt(int64(totalStake)))
 	amount := new(big.Int).Div(numerator, fraction.Denom())
-	
+
 	return amount.Uint64()
 }
 
@@ -464,18 +464,18 @@ func (s *Service) ProcessRefunds(epochNo uint32) error {
 // Helper method to process MIR certificates for treasury/reserve
 func (s *Service) ProcessMIRCertificate(tx *gorm.DB, mir *common.MoveInstantaneousRewardsCertificate, txHash []byte, certIndex uint32) error {
 	// This would be called from certificate processor when MIR certs are found
-	
+
 	pot := "reserves"
 	if mir.Reward.Source == 2 {
 		pot = "treasury"
 	}
-	
+
 	// Check if this is a pot-to-pot transfer
 	if mir.Reward.OtherPot > 0 {
 		// This affects treasury/reserve balances
 		// Use a system stake address placeholder
 		systemAddr := []byte("system_treasury_reserve")
-		
+
 		if pot == "treasury" {
 			// Transfer from treasury
 			treasury := &models.Treasury{
@@ -500,6 +500,6 @@ func (s *Service) ProcessMIRCertificate(tx *gorm.DB, mir *common.MoveInstantaneo
 			}
 		}
 	}
-	
+
 	return nil
 }

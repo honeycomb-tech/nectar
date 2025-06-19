@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	unifiederrors "nectar/errors"
 	"nectar/models"
 
 	"github.com/blinklabs-io/gouroboros/ledger/common"
@@ -148,7 +149,9 @@ func (gp *GovernanceProcessor) ProcessVotingProcedures(ctx context.Context, tx *
 
 	// Try to extract voting procedures
 	switch txWithVotes := transaction.(type) {
-	case interface{ VotingProcedures() map[*common.Voter]map[*common.GovActionId]common.VotingProcedure }:
+	case interface {
+		VotingProcedures() map[*common.Voter]map[*common.GovActionId]common.VotingProcedure
+	}:
 		votingProcedures := txWithVotes.VotingProcedures()
 		if len(votingProcedures) == 0 {
 			return nil
@@ -162,7 +165,7 @@ func (gp *GovernanceProcessor) ProcessVotingProcedures(ctx context.Context, tx *
 					gp.errorCollector.ProcessingWarning("GovernanceProcessor", "processVotingProcedure",
 						fmt.Sprintf("failed to process voting procedure: %v", err),
 						fmt.Sprintf("tx_hash:%x", txHash))
-					log.Printf("[WARNING] Voting procedure processing error: %v", err)
+					unifiederrors.Get().Warning("GovernanceProcessor", "VotingProcedure", fmt.Sprintf("Voting procedure processing error: %v", err))
 				}
 			}
 		}
@@ -179,7 +182,7 @@ func (gp *GovernanceProcessor) processVotingProcedure(tx *gorm.DB, txHash []byte
 	// Convert voter type to role
 	voterRole := gp.convertVoterTypeToRole(voter.Type)
 	voteChoice := gp.convertVoteToChoice(procedure.Vote)
-	
+
 	// Create voting procedure hash from tx hash and governance action ID
 	govActionProposalHash := models.GenerateGovActionProposalHash(govActionID.TransactionId[:], govActionID.GovActionIdx)
 
@@ -235,7 +238,7 @@ func (gp *GovernanceProcessor) processVotingProcedure(tx *gorm.DB, txHash []byte
 	if procedure.Anchor != nil {
 		anchorHash, err := gp.processVotingAnchor(tx, procedure.Anchor)
 		if err != nil {
-			log.Printf("[WARNING] Failed to process voting anchor: %v", err)
+			unifiederrors.Get().Warning("GovernanceProcessor", "ProcessVotingAnchor", fmt.Sprintf("Failed to process voting anchor: %v", err))
 		} else {
 			votingProc.VotingAnchorHash = anchorHash
 		}
@@ -257,11 +260,11 @@ func (gp *GovernanceProcessor) processVotingAnchor(tx *gorm.DB, anchor *common.G
 	if err == nil {
 		return existingAnchor.DataHash, nil
 	}
-	
+
 	if err != gorm.ErrRecordNotFound {
 		return nil, fmt.Errorf("failed to query voting anchor: %w", err)
 	}
-	
+
 	// Create voting anchor record
 	votingAnchor := &models.VotingAnchor{
 		URL:      anchor.Url,
@@ -275,7 +278,7 @@ func (gp *GovernanceProcessor) processVotingAnchor(tx *gorm.DB, anchor *common.G
 	// Queue governance metadata for fetching if fetcher is available
 	if gp.metadataFetcher != nil {
 		if err := gp.metadataFetcher.QueueGovernanceMetadata(anchor.DataHash[:], anchor.Url, anchor.DataHash[:]); err != nil {
-			log.Printf("[WARNING] Failed to queue governance metadata for fetching: %v", err)
+			unifiederrors.Get().Warning("GovernanceProcessor", "QueueMetadata", fmt.Sprintf("Failed to queue governance metadata for fetching: %v", err))
 		} else {
 			log.Printf(" Queued governance metadata for off-chain fetching: %s", anchor.Url)
 		}
@@ -294,7 +297,9 @@ func (gp *GovernanceProcessor) ProcessProposalProcedures(ctx context.Context, tx
 
 	// Try to extract proposal procedures
 	switch txWithProposals := transaction.(type) {
-	case interface{ ProposalProcedures() []common.ProposalProcedure }:
+	case interface {
+		ProposalProcedures() []common.ProposalProcedure
+	}:
 		proposals := txWithProposals.ProposalProcedures()
 		if len(proposals) == 0 {
 			return nil
@@ -394,7 +399,7 @@ func (gp *GovernanceProcessor) processParameterChange(tx *gorm.DB, govActionHash
 	// may not have a Params field. Check the specific implementation.
 	// For now, we'll just log the action
 	log.Printf(" Parameter change governance action recorded")
-	
+
 	// In a complete implementation, you would:
 	// 1. Check the actual fields of ParameterChangeGovAction
 	// 2. Extract each parameter (MinFeeA, MaxBlockSize, etc.)
@@ -418,7 +423,7 @@ func (gp *GovernanceProcessor) processTreasuryWithdrawals(tx *gorm.DB, govAction
 		if stakeAddrHash == nil {
 			continue
 		}
-		
+
 		withdrawal := &models.TreasuryWithdrawal{
 			GovActionProposalHash: govActionHash,
 			Amount:                amount,
@@ -439,7 +444,7 @@ func (gp *GovernanceProcessor) processNewCommittee(tx *gorm.DB, govActionHash []
 	// The actual UpdateCommitteeGovAction structure may have a quorum field
 	// For now, use a default value
 	quorum := 0.67 // 2/3 majority
-	
+
 	// Create committee record with hash
 	committeeHash := models.GenerateCommitteeHash(govActionHash, quorum)
 	committee := &models.Committee{
@@ -447,7 +452,7 @@ func (gp *GovernanceProcessor) processNewCommittee(tx *gorm.DB, govActionHash []
 		GovActionProposalHash: govActionHash,
 		Quorum:                quorum,
 	}
-	
+
 	if err := tx.Create(committee).Error; err != nil {
 		return fmt.Errorf("failed to create committee record: %w", err)
 	}
@@ -485,20 +490,20 @@ func (gp *GovernanceProcessor) processNewCommittee(tx *gorm.DB, govActionHash []
 
 // processNewConstitution processes new constitution governance action
 func (gp *GovernanceProcessor) processNewConstitution(tx *gorm.DB, govActionHash []byte, action *common.NewConstitutionGovAction) error {
-	// Extract script hash and create anchor hash first  
+	// Extract script hash and create anchor hash first
 	scriptHash := gp.extractConstitutionScriptHash(action)
 	var votingAnchorHash []byte
-	
+
 	// Handle anchor if present
 	if action.Constitution.Anchor.Url != "" {
 		anchorHash, err := gp.processVotingAnchor(tx, &action.Constitution.Anchor)
 		if err != nil {
-			log.Printf("[WARNING] Failed to process voting anchor: %v", err)
+			unifiederrors.Get().Warning("GovernanceProcessor", "ProcessVotingAnchor", fmt.Sprintf("Failed to process voting anchor: %v", err))
 		} else {
 			votingAnchorHash = anchorHash
 		}
 	}
-	
+
 	// Create constitution record
 	constitutionHash := models.GenerateConstitutionHash(govActionHash, votingAnchorHash, scriptHash)
 	constitution := &models.Constitution{
@@ -627,10 +632,10 @@ func (gp *GovernanceProcessor) processAuthCommitteeHot(tx *gorm.DB, txHash []byt
 
 	// Create committee registration record
 	committeeReg := &models.CommitteeRegistration{
-		TxHash:       txHash,
-		CertIndex:    uint32(certIndex),
-		ColdKeyHash:  cert.ColdCredential.Credential[:],
-		HotKeyHash:   cert.HostCredential.Credential[:],
+		TxHash:      txHash,
+		CertIndex:   uint32(certIndex),
+		ColdKeyHash: cert.ColdCredential.Credential[:],
+		HotKeyHash:  cert.HostCredential.Credential[:],
 	}
 
 	if err := tx.Create(committeeReg).Error; err != nil {
@@ -652,9 +657,9 @@ func (gp *GovernanceProcessor) processResignCommitteeCold(tx *gorm.DB, txHash []
 
 	// Create committee de-registration record
 	committeeDereg := &models.CommitteeDeregistration{
-		TxHash:       txHash,
-		CertIndex:    uint32(certIndex),
-		ColdKeyHash:  cert.ColdCredential.Credential[:],
+		TxHash:      txHash,
+		CertIndex:   uint32(certIndex),
+		ColdKeyHash: cert.ColdCredential.Credential[:],
 	}
 
 	// Process resignation anchor if present
@@ -781,18 +786,18 @@ func (gp *GovernanceProcessor) calculateEpochFromGovAction(tx *gorm.DB, govActio
 	if err := tx.Where("id = ?", govActionID).First(&proposal).Error; err != nil {
 		return 0
 	}
-	
+
 	// Get the block to find the slot number
 	var block models.Block
 	if err := tx.Where("hash = ?", proposal.TxHash).First(&block).Error; err != nil {
 		return 0
 	}
-	
+
 	// Calculate epoch from slot (Shelley+ uses 432000 slots per epoch)
 	if block.SlotNo != nil {
 		return uint32(*block.SlotNo / 432000)
 	}
-	
+
 	return 0
 }
 
@@ -813,19 +818,19 @@ func (gp *GovernanceProcessor) CalculateDRepDistribution(ctx context.Context, tx
 		DRepHash   []byte
 		TotalStake uint64
 	}
-	
+
 	err := tx.Table("drep_distr").
 		Select("drep_hash, SUM(amount) as total_stake").
 		Where("epoch_no = ?", epochNo).
 		Group("drep_hash").
 		Scan(&drepDelegations).Error
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to calculate DRep distribution: %w", err)
 	}
-	
+
 	log.Printf("Calculated DRep distribution for epoch %d: %d DReps", epochNo, len(drepDelegations))
-	
+
 	// Store aggregated results
 	for _, delegation := range drepDelegations {
 		distribution := &models.DRepDistr{
@@ -833,12 +838,12 @@ func (gp *GovernanceProcessor) CalculateDRepDistribution(ctx context.Context, tx
 			Amount:  delegation.TotalStake,
 			EpochNo: epochNo,
 		}
-		
+
 		if err := tx.Create(distribution).Error; err != nil {
 			log.Printf("[WARNING] Failed to store DRep distribution: %v", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -846,7 +851,7 @@ func (gp *GovernanceProcessor) CalculateDRepDistribution(ctx context.Context, tx
 func (gp *GovernanceProcessor) ProcessDRepDelegation(ctx context.Context, tx *gorm.DB, txHash []byte, certIndex int, addrHash []byte, drepCred interface{}) error {
 	// Handle different DRep credential types
 	var drepHash []byte
-	
+
 	switch cred := drepCred.(type) {
 	case []byte:
 		// Regular DRep key hash
@@ -864,19 +869,19 @@ func (gp *GovernanceProcessor) ProcessDRepDelegation(ctx context.Context, tx *go
 	default:
 		return fmt.Errorf("unknown DRep credential type: %T", drepCred)
 	}
-	
+
 	// Create delegation vote record for DRep delegation
 	delegationVote := &models.DelegationVote{
-		AddrHash:   addrHash,
-		CertIndex:  uint32(certIndex),
-		TxHash:     txHash,
-		DRepHash:   drepHash,
+		AddrHash:  addrHash,
+		CertIndex: uint32(certIndex),
+		TxHash:    txHash,
+		DRepHash:  drepHash,
 	}
-	
+
 	if err := tx.Create(delegationVote).Error; err != nil {
 		return fmt.Errorf("failed to create DRep delegation: %w", err)
 	}
-	
+
 	log.Printf("[OK] Processed DRep delegation for address %x", addrHash)
 	return nil
 }
@@ -887,16 +892,16 @@ func (gp *GovernanceProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, tr
 	if blockType < 7 {
 		return nil
 	}
-	
+
 	// Process voting procedures
 	if err := gp.ProcessVotingProcedures(context.Background(), tx, txHash, transaction, blockType); err != nil {
 		return fmt.Errorf("failed to process voting procedures: %w", err)
 	}
-	
+
 	// Process proposal procedures
 	if err := gp.ProcessProposalProcedures(context.Background(), tx, txHash, transaction, blockType); err != nil {
 		return fmt.Errorf("failed to process proposal procedures: %w", err)
 	}
-	
+
 	return nil
 }

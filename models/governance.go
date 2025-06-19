@@ -2,19 +2,21 @@ package models
 
 import (
 	"crypto/sha256"
-	"unsafe"
 	"gorm.io/gorm"
+	"unsafe"
 )
 
 // Custom ENUM types for governance
 type VoterRole string
+
 const (
 	VoterRoleConstitutionalCommittee VoterRole = "ConstitutionalCommittee"
-	VoterRoleDRep                   VoterRole = "DRep" 
-	VoterRoleSPO                    VoterRole = "SPO"
+	VoterRoleDRep                    VoterRole = "DRep"
+	VoterRoleSPO                     VoterRole = "SPO"
 )
 
 type VoteChoice string
+
 const (
 	VoteChoiceYes     VoteChoice = "Yes"
 	VoteChoiceNo      VoteChoice = "No"
@@ -35,12 +37,12 @@ type VotingProcedure struct {
 	Invalid               *bool      `gorm:"default:false"`
 
 	// Relationships
-	Tx                  Tx                 `gorm:"foreignKey:TxHash;references:Hash"`
-	GovActionProposal   GovActionProposal  `gorm:"foreignKey:GovActionProposalHash;references:Hash"`
-	CommitteeVoterHash  *CommitteeHash     `gorm:"foreignKey:CommitteeVoter;references:HashRaw"`
-	DRepVoterHash       *DRepHash          `gorm:"foreignKey:DRepVoter;references:HashRaw"`
-	PoolVoterHash       *PoolHash          `gorm:"foreignKey:PoolVoter;references:HashRaw"`
-	VotingAnchor        *VotingAnchor      `gorm:"foreignKey:VotingAnchorHash;references:Hash"`
+	Tx                 Tx                `gorm:"foreignKey:TxHash;references:Hash"`
+	GovActionProposal  GovActionProposal `gorm:"foreignKey:GovActionProposalHash;references:Hash"`
+	CommitteeVoterHash *CommitteeHash    `gorm:"foreignKey:CommitteeVoter;references:HashRaw"`
+	DRepVoterHash      *DRepHash         `gorm:"foreignKey:DRepVoter;references:HashRaw"`
+	PoolVoterHash      *PoolHash         `gorm:"foreignKey:PoolVoter;references:HashRaw"`
+	VotingAnchor       *VotingAnchor     `gorm:"foreignKey:VotingAnchorHash;references:Hash"`
 }
 
 func (VotingProcedure) TableName() string {
@@ -85,43 +87,43 @@ func GenerateGovActionProposalHash(txHash []byte, index uint32) []byte {
 
 // ParamProposal represents protocol parameter proposals with hash as primary key
 type ParamProposal struct {
-	Hash                  []byte   `gorm:"type:VARBINARY(32);primaryKey"` // Hash of all params
-	EpochNo               uint32   `gorm:"type:INT UNSIGNED;not null;index"`
-	Key                   uint32   `gorm:"type:INT UNSIGNED;not null;index"`
-	MinFeeA               *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MinFeeB               *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MaxBlockSize          *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MaxTxSize             *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MaxBhSize             *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	KeyDeposit            *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	PoolDeposit           *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MaxEpoch              *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	OptimalPoolCount      *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	Influence             *float64 `gorm:"type:DOUBLE"`
-	MonetaryExpandRate    *float64 `gorm:"type:DOUBLE"`
-	TreasuryGrowthRate    *float64 `gorm:"type:DOUBLE"`
-	Decentralisation      *float64 `gorm:"type:DOUBLE"`
-	Entropy               []byte   `gorm:"type:VARBINARY(32)"`
-	ProtocolMajor         *uint32  `gorm:"type:INT UNSIGNED"`
-	ProtocolMinor         *uint32  `gorm:"type:INT UNSIGNED"`
-	MinUtxoValue          *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MinPoolCost           *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	CostModelHash         []byte   `gorm:"type:VARBINARY(32);index"`
-	PriceMem              *float64 `gorm:"type:DOUBLE"`
-	PriceStep             *float64 `gorm:"type:DOUBLE"`
-	MaxTxExMem            *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MaxTxExSteps          *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MaxBlockExMem         *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MaxBlockExSteps       *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	MaxValSize            *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	CollateralPercent     *uint32  `gorm:"type:INT UNSIGNED"`
-	MaxCollateralInputs   *uint32  `gorm:"type:INT UNSIGNED"`
-	CoinsPerUtxoSize      *uint64  `gorm:"type:BIGINT UNSIGNED"`
-	CoinsPerUtxoWord      *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	Hash                []byte   `gorm:"type:VARBINARY(32);primaryKey"` // Hash of all params
+	EpochNo             uint32   `gorm:"type:INT UNSIGNED;not null;index"`
+	Key                 uint32   `gorm:"type:INT UNSIGNED;not null;index"`
+	MinFeeA             *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MinFeeB             *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MaxBlockSize        *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MaxTxSize           *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MaxBhSize           *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	KeyDeposit          *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	PoolDeposit         *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MaxEpoch            *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	OptimalPoolCount    *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	Influence           *float64 `gorm:"type:DOUBLE"`
+	MonetaryExpandRate  *float64 `gorm:"type:DOUBLE"`
+	TreasuryGrowthRate  *float64 `gorm:"type:DOUBLE"`
+	Decentralisation    *float64 `gorm:"type:DOUBLE"`
+	Entropy             []byte   `gorm:"type:VARBINARY(32)"`
+	ProtocolMajor       *uint32  `gorm:"type:INT UNSIGNED"`
+	ProtocolMinor       *uint32  `gorm:"type:INT UNSIGNED"`
+	MinUtxoValue        *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MinPoolCost         *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	CostModelHash       []byte   `gorm:"type:VARBINARY(32);index"`
+	PriceMem            *float64 `gorm:"type:DOUBLE"`
+	PriceStep           *float64 `gorm:"type:DOUBLE"`
+	MaxTxExMem          *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MaxTxExSteps        *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MaxBlockExMem       *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MaxBlockExSteps     *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	MaxValSize          *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	CollateralPercent   *uint32  `gorm:"type:INT UNSIGNED"`
+	MaxCollateralInputs *uint32  `gorm:"type:INT UNSIGNED"`
+	CoinsPerUtxoSize    *uint64  `gorm:"type:BIGINT UNSIGNED"`
+	CoinsPerUtxoWord    *uint64  `gorm:"type:BIGINT UNSIGNED"`
 
 	// Relationships
-	CostModel          *CostModel           `gorm:"foreignKey:CostModelHash;references:Hash"`
-	GovActionProposals []GovActionProposal  `gorm:"foreignKey:ParamProposalHash;references:Hash"`
+	CostModel          *CostModel          `gorm:"foreignKey:CostModelHash;references:Hash"`
+	GovActionProposals []GovActionProposal `gorm:"foreignKey:ParamProposalHash;references:Hash"`
 }
 
 func (ParamProposal) TableName() string {
@@ -267,15 +269,15 @@ func (CommitteeMember) TableName() string {
 
 // EpochState represents epoch state information with epoch as primary key
 type EpochState struct {
-	EpochNo            uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
-	CommitteeHash      []byte `gorm:"type:VARBINARY(32);index"`
-	NoConfidenceHash   []byte `gorm:"type:VARBINARY(32);index"`
-	ConstitutionHash   []byte `gorm:"type:VARBINARY(32);index"`
+	EpochNo          uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	CommitteeHash    []byte `gorm:"type:VARBINARY(32);index"`
+	NoConfidenceHash []byte `gorm:"type:VARBINARY(32);index"`
+	ConstitutionHash []byte `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
-	Committee     *Committee         `gorm:"foreignKey:CommitteeHash;references:Hash"`
-	NoConfidence  *GovActionProposal `gorm:"foreignKey:NoConfidenceHash;references:Hash"`
-	Constitution  *Constitution      `gorm:"foreignKey:ConstitutionHash;references:Hash"`
+	Committee    *Committee         `gorm:"foreignKey:CommitteeHash;references:Hash"`
+	NoConfidence *GovActionProposal `gorm:"foreignKey:NoConfidenceHash;references:Hash"`
+	Constitution *Constitution      `gorm:"foreignKey:ConstitutionHash;references:Hash"`
 }
 
 func (EpochState) TableName() string {
@@ -400,13 +402,13 @@ func (PotTransfer) TableName() string {
 
 // DrepInfo represents Delegated Representative information with hash as primary key
 type DrepInfo struct {
-	Hash                   []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	View                   string  `gorm:"type:VARCHAR(255);not null;uniqueIndex"`
-	HasScript              bool    `gorm:"not null"`
-	RegisteredTxHash       []byte  `gorm:"type:VARBINARY(32);index"`
-	DeregisteredTxHash     []byte  `gorm:"type:VARBINARY(32);index"`
-	VotingAnchorHash       []byte  `gorm:"type:VARBINARY(32);index"`
-	Deposit                *uint64 `gorm:"type:BIGINT UNSIGNED"`
+	Hash               []byte  `gorm:"type:VARBINARY(32);primaryKey"`
+	View               string  `gorm:"type:VARCHAR(255);not null;uniqueIndex"`
+	HasScript          bool    `gorm:"not null"`
+	RegisteredTxHash   []byte  `gorm:"type:VARBINARY(32);index"`
+	DeregisteredTxHash []byte  `gorm:"type:VARBINARY(32);index"`
+	VotingAnchorHash   []byte  `gorm:"type:VARBINARY(32);index"`
+	Deposit            *uint64 `gorm:"type:BIGINT UNSIGNED"`
 
 	// Relationships
 	RegisteredTx     *Tx               `gorm:"foreignKey:RegisteredTxHash;references:Hash"`
@@ -421,22 +423,22 @@ func (DrepInfo) TableName() string {
 }
 
 // Remove all BeforeCreate hooks since we don't need ID management
-func (v *VotingProcedure) BeforeCreate(tx *gorm.DB) error { return nil }
-func (g *GovActionProposal) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *ParamProposal) BeforeCreate(tx *gorm.DB) error { return nil }
-func (d *DRepHash) BeforeCreate(tx *gorm.DB) error { return nil }
-func (c *CommitteeHash) BeforeCreate(tx *gorm.DB) error { return nil }
-func (v *VotingAnchor) BeforeCreate(tx *gorm.DB) error { return nil }
-func (d *DelegationVote) BeforeCreate(tx *gorm.DB) error { return nil }
-func (c *CommitteeRegistration) BeforeCreate(tx *gorm.DB) error { return nil }
+func (v *VotingProcedure) BeforeCreate(tx *gorm.DB) error         { return nil }
+func (g *GovActionProposal) BeforeCreate(tx *gorm.DB) error       { return nil }
+func (p *ParamProposal) BeforeCreate(tx *gorm.DB) error           { return nil }
+func (d *DRepHash) BeforeCreate(tx *gorm.DB) error                { return nil }
+func (c *CommitteeHash) BeforeCreate(tx *gorm.DB) error           { return nil }
+func (v *VotingAnchor) BeforeCreate(tx *gorm.DB) error            { return nil }
+func (d *DelegationVote) BeforeCreate(tx *gorm.DB) error          { return nil }
+func (c *CommitteeRegistration) BeforeCreate(tx *gorm.DB) error   { return nil }
 func (c *CommitteeDeregistration) BeforeCreate(tx *gorm.DB) error { return nil }
-func (t *TreasuryWithdrawal) BeforeCreate(tx *gorm.DB) error { return nil }
-func (c *CommitteeMember) BeforeCreate(tx *gorm.DB) error { return nil }
-func (e *EpochState) BeforeCreate(tx *gorm.DB) error { return nil }
-func (d *DRepDistr) BeforeCreate(tx *gorm.DB) error { return nil }
-func (c *Committee) BeforeCreate(tx *gorm.DB) error { return nil }
-func (c *Constitution) BeforeCreate(tx *gorm.DB) error { return nil }
-func (t *Treasury) BeforeCreate(tx *gorm.DB) error { return nil }
-func (r *Reserve) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *PotTransfer) BeforeCreate(tx *gorm.DB) error { return nil }
-func (d *DrepInfo) BeforeCreate(tx *gorm.DB) error { return nil }
+func (t *TreasuryWithdrawal) BeforeCreate(tx *gorm.DB) error      { return nil }
+func (c *CommitteeMember) BeforeCreate(tx *gorm.DB) error         { return nil }
+func (e *EpochState) BeforeCreate(tx *gorm.DB) error              { return nil }
+func (d *DRepDistr) BeforeCreate(tx *gorm.DB) error               { return nil }
+func (c *Committee) BeforeCreate(tx *gorm.DB) error               { return nil }
+func (c *Constitution) BeforeCreate(tx *gorm.DB) error            { return nil }
+func (t *Treasury) BeforeCreate(tx *gorm.DB) error                { return nil }
+func (r *Reserve) BeforeCreate(tx *gorm.DB) error                 { return nil }
+func (p *PotTransfer) BeforeCreate(tx *gorm.DB) error             { return nil }
+func (d *DrepInfo) BeforeCreate(tx *gorm.DB) error                { return nil }

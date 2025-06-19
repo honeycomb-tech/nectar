@@ -7,11 +7,11 @@ type LoggingConfig struct {
 	// Certificate logging
 	LogCertificateProcessing atomic.Bool
 	LogCertificateDetails    atomic.Bool
-	
+
 	// Block logging
 	LogBlockProcessing       atomic.Bool
 	LogTransactionProcessing atomic.Bool
-	
+
 	// Staking logging
 	LogStakeOperations atomic.Bool
 	LogPoolOperations  atomic.Bool
@@ -27,11 +27,11 @@ func InitLoggingConfig(verbose bool) {
 	GlobalLoggingConfig.LogCertificateDetails.Store(false)
 	GlobalLoggingConfig.LogStakeOperations.Store(false)
 	GlobalLoggingConfig.LogPoolOperations.Store(false)
-	
+
 	// Show some essential progress info
 	GlobalLoggingConfig.LogBlockProcessing.Store(true)
 	GlobalLoggingConfig.LogTransactionProcessing.Store(false)
-	
+
 	// If verbose mode requested, enable all
 	if verbose {
 		GlobalLoggingConfig.LogCertificateProcessing.Store(true)

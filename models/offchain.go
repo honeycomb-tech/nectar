@@ -3,7 +3,7 @@ package models
 import (
 	"crypto/sha256"
 	"time"
-	
+
 	"gorm.io/gorm"
 )
 
@@ -185,12 +185,12 @@ func (OffChainVoteFetchError) TableName() string {
 }
 
 // Remove all BeforeCreate hooks since we don't need ID management
-func (o *OffChainPoolData) BeforeCreate(tx *gorm.DB) error { return nil }
-func (o *OffChainPoolFetchError) BeforeCreate(tx *gorm.DB) error { return nil }
-func (o *OffChainVoteData) BeforeCreate(tx *gorm.DB) error { return nil }
-func (o *OffChainVoteGovActionData) BeforeCreate(tx *gorm.DB) error { return nil }
-func (o *OffChainVoteDRepData) BeforeCreate(tx *gorm.DB) error { return nil }
-func (o *OffChainVoteAuthor) BeforeCreate(tx *gorm.DB) error { return nil }
-func (o *OffChainVoteReference) BeforeCreate(tx *gorm.DB) error { return nil }
+func (o *OffChainPoolData) BeforeCreate(tx *gorm.DB) error           { return nil }
+func (o *OffChainPoolFetchError) BeforeCreate(tx *gorm.DB) error     { return nil }
+func (o *OffChainVoteData) BeforeCreate(tx *gorm.DB) error           { return nil }
+func (o *OffChainVoteGovActionData) BeforeCreate(tx *gorm.DB) error  { return nil }
+func (o *OffChainVoteDRepData) BeforeCreate(tx *gorm.DB) error       { return nil }
+func (o *OffChainVoteAuthor) BeforeCreate(tx *gorm.DB) error         { return nil }
+func (o *OffChainVoteReference) BeforeCreate(tx *gorm.DB) error      { return nil }
 func (o *OffChainVoteExternalUpdate) BeforeCreate(tx *gorm.DB) error { return nil }
-func (o *OffChainVoteFetchError) BeforeCreate(tx *gorm.DB) error { return nil }
+func (o *OffChainVoteFetchError) BeforeCreate(tx *gorm.DB) error     { return nil }

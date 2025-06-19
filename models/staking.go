@@ -6,9 +6,9 @@ import (
 
 // StakeAddress represents stake addresses with hash as primary key
 type StakeAddress struct {
-	HashRaw    []byte  `gorm:"type:VARBINARY(28);primaryKey"`
-	View       string  `gorm:"type:VARCHAR(64);not null;uniqueIndex"`
-	ScriptHash []byte  `gorm:"type:VARBINARY(28);index"`
+	HashRaw    []byte `gorm:"type:VARBINARY(28);primaryKey"`
+	View       string `gorm:"type:VARCHAR(64);not null;uniqueIndex"`
+	ScriptHash []byte `gorm:"type:VARBINARY(28);index"`
 
 	// Relationships
 	TxOuts               []TxOut               `gorm:"foreignKey:StakeAddressHash;references:HashRaw"`
@@ -42,25 +42,25 @@ func (PoolHash) TableName() string {
 
 // PoolUpdate represents pool updates with composite primary key
 type PoolUpdate struct {
-	TxHash        []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	CertIndex     uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	PoolHash      []byte  `gorm:"type:VARBINARY(28);not null;index"`
-	VrfKeyHash    []byte  `gorm:"type:VARBINARY(32);not null"`
-	Pledge        int64   `gorm:"type:BIGINT;not null"`
-	Cost          int64   `gorm:"type:BIGINT;not null"`
-	Margin        float64 `gorm:"not null"`
-	FixedCost     int64   `gorm:"type:BIGINT;not null"`
+	TxHash         []byte  `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex      uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
+	PoolHash       []byte  `gorm:"type:VARBINARY(28);not null;index"`
+	VrfKeyHash     []byte  `gorm:"type:VARBINARY(32);not null"`
+	Pledge         int64   `gorm:"type:BIGINT;not null"`
+	Cost           int64   `gorm:"type:BIGINT;not null"`
+	Margin         float64 `gorm:"not null"`
+	FixedCost      int64   `gorm:"type:BIGINT;not null"`
 	RewardAddrHash []byte  `gorm:"type:VARBINARY(28);not null;index"`
-	ActiveEpochNo uint32  `gorm:"type:INT UNSIGNED;not null"`
-	MetaUrl       *string `gorm:"type:VARCHAR(255)"`
-	MetaHash      []byte  `gorm:"type:VARBINARY(32)"`
+	ActiveEpochNo  uint32  `gorm:"type:INT UNSIGNED;not null"`
+	MetaUrl        *string `gorm:"type:VARCHAR(255)"`
+	MetaHash       []byte  `gorm:"type:VARBINARY(32)"`
 
 	// Relationships
-	Tx           Tx            `gorm:"foreignKey:TxHash;references:Hash"`
-	Pool         PoolHash      `gorm:"foreignKey:PoolHash;references:HashRaw"`
-	RewardAddr   StakeAddress  `gorm:"foreignKey:RewardAddrHash;references:HashRaw"`
-	PoolRelays   []PoolRelay   `gorm:"foreignKey:UpdateTxHash,UpdateCertIndex;references:TxHash,CertIndex"`
-	PoolOwners   []PoolOwner   `gorm:"foreignKey:UpdateTxHash,UpdateCertIndex;references:TxHash,CertIndex"`
+	Tx         Tx           `gorm:"foreignKey:TxHash;references:Hash"`
+	Pool       PoolHash     `gorm:"foreignKey:PoolHash;references:HashRaw"`
+	RewardAddr StakeAddress `gorm:"foreignKey:RewardAddrHash;references:HashRaw"`
+	PoolRelays []PoolRelay  `gorm:"foreignKey:UpdateTxHash,UpdateCertIndex;references:TxHash,CertIndex"`
+	PoolOwners []PoolOwner  `gorm:"foreignKey:UpdateTxHash,UpdateCertIndex;references:TxHash,CertIndex"`
 }
 
 func (PoolUpdate) TableName() string {
@@ -88,16 +88,16 @@ func (PoolRelay) TableName() string {
 
 // PoolRetire represents pool retirement
 type PoolRetire struct {
-	TxHash         []byte `gorm:"type:VARBINARY(32);primaryKey"`
-	CertIndex      uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
-	PoolHash       []byte `gorm:"type:VARBINARY(28);not null;index"`
-	RetiringEpoch  uint32 `gorm:"type:INT UNSIGNED;not null"`
+	TxHash          []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex       uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	PoolHash        []byte `gorm:"type:VARBINARY(28);not null;index"`
+	RetiringEpoch   uint32 `gorm:"type:INT UNSIGNED;not null"`
 	AnnouncedTxHash []byte `gorm:"type:VARBINARY(32);not null;index"`
 
 	// Relationships
-	Tx           Tx       `gorm:"foreignKey:TxHash;references:Hash"`
-	Pool         PoolHash `gorm:"foreignKey:PoolHash;references:HashRaw"`
-	AnnouncedTx  Tx       `gorm:"foreignKey:AnnouncedTxHash;references:Hash"`
+	Tx          Tx       `gorm:"foreignKey:TxHash;references:Hash"`
+	Pool        PoolHash `gorm:"foreignKey:PoolHash;references:HashRaw"`
+	AnnouncedTx Tx       `gorm:"foreignKey:AnnouncedTxHash;references:Hash"`
 }
 
 func (PoolRetire) TableName() string {
@@ -121,15 +121,15 @@ func (PoolOwner) TableName() string {
 
 // PoolMetadataRef represents pool metadata references
 type PoolMetadataRef struct {
-	Hash        []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	PoolHash    []byte  `gorm:"type:VARBINARY(28);not null;index"`
-	Url         string  `gorm:"type:VARCHAR(255);not null"`
-	RegisteredTxHash []byte  `gorm:"type:VARBINARY(32);not null;index"`
+	Hash             []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	PoolHash         []byte `gorm:"type:VARBINARY(28);not null;index"`
+	Url              string `gorm:"type:VARCHAR(255);not null"`
+	RegisteredTxHash []byte `gorm:"type:VARBINARY(32);not null;index"`
 
 	// Relationships
-	Pool         PoolHash            `gorm:"foreignKey:PoolHash;references:HashRaw"`
-	RegisteredTx Tx                  `gorm:"foreignKey:RegisteredTxHash;references:Hash"`
-	OffChainData []OffChainPoolData  `gorm:"foreignKey:PmrHash;references:Hash"`
+	Pool         PoolHash           `gorm:"foreignKey:PoolHash;references:HashRaw"`
+	RegisteredTx Tx                 `gorm:"foreignKey:RegisteredTxHash;references:Hash"`
+	OffChainData []OffChainPoolData `gorm:"foreignKey:PmrHash;references:Hash"`
 }
 
 func (PoolMetadataRef) TableName() string {
@@ -138,15 +138,15 @@ func (PoolMetadataRef) TableName() string {
 
 // StakeRegistration represents stake key registration
 type StakeRegistration struct {
-	TxHash      []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	CertIndex   uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	AddrHash    []byte  `gorm:"type:VARBINARY(28);not null;index"`
-	RedeemerHash []byte  `gorm:"type:VARBINARY(32);index"`
+	TxHash       []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex    uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	AddrHash     []byte `gorm:"type:VARBINARY(28);not null;index"`
+	RedeemerHash []byte `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
-	Tx       Tx            `gorm:"foreignKey:TxHash;references:Hash"`
-	Addr     StakeAddress  `gorm:"foreignKey:AddrHash;references:HashRaw"`
-	Redeemer *Redeemer     `gorm:"foreignKey:RedeemerHash;references:Hash"`
+	Tx       Tx           `gorm:"foreignKey:TxHash;references:Hash"`
+	Addr     StakeAddress `gorm:"foreignKey:AddrHash;references:HashRaw"`
+	Redeemer *Redeemer    `gorm:"foreignKey:RedeemerHash;references:Hash"`
 }
 
 func (StakeRegistration) TableName() string {
@@ -155,15 +155,15 @@ func (StakeRegistration) TableName() string {
 
 // StakeDeregistration represents stake key deregistration
 type StakeDeregistration struct {
-	TxHash      []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	CertIndex   uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	AddrHash    []byte  `gorm:"type:VARBINARY(28);not null;index"`
-	RedeemerHash []byte  `gorm:"type:VARBINARY(32);index"`
+	TxHash       []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex    uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	AddrHash     []byte `gorm:"type:VARBINARY(28);not null;index"`
+	RedeemerHash []byte `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
-	Tx       Tx            `gorm:"foreignKey:TxHash;references:Hash"`
-	Addr     StakeAddress  `gorm:"foreignKey:AddrHash;references:HashRaw"`
-	Redeemer *Redeemer     `gorm:"foreignKey:RedeemerHash;references:Hash"`
+	Tx       Tx           `gorm:"foreignKey:TxHash;references:Hash"`
+	Addr     StakeAddress `gorm:"foreignKey:AddrHash;references:HashRaw"`
+	Redeemer *Redeemer    `gorm:"foreignKey:RedeemerHash;references:Hash"`
 }
 
 func (StakeDeregistration) TableName() string {
@@ -172,19 +172,19 @@ func (StakeDeregistration) TableName() string {
 
 // Delegation represents stake delegation
 type Delegation struct {
-	TxHash        []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	CertIndex     uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	AddrHash      []byte  `gorm:"type:VARBINARY(28);not null;index"`
-	PoolHash      []byte  `gorm:"type:VARBINARY(28);not null;index"`
-	ActiveEpochNo uint32  `gorm:"type:INT UNSIGNED;not null;index"`
-	SlotNo        uint64  `gorm:"type:BIGINT UNSIGNED;not null"`
-	RedeemerHash  []byte  `gorm:"type:VARBINARY(32);index"`
+	TxHash        []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex     uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	AddrHash      []byte `gorm:"type:VARBINARY(28);not null;index"`
+	PoolHash      []byte `gorm:"type:VARBINARY(28);not null;index"`
+	ActiveEpochNo uint32 `gorm:"type:INT UNSIGNED;not null;index"`
+	SlotNo        uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
+	RedeemerHash  []byte `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
-	Tx       Tx            `gorm:"foreignKey:TxHash;references:Hash"`
-	Addr     StakeAddress  `gorm:"foreignKey:AddrHash;references:HashRaw"`
-	Pool     PoolHash      `gorm:"foreignKey:PoolHash;references:HashRaw"`
-	Redeemer *Redeemer     `gorm:"foreignKey:RedeemerHash;references:Hash"`
+	Tx       Tx           `gorm:"foreignKey:TxHash;references:Hash"`
+	Addr     StakeAddress `gorm:"foreignKey:AddrHash;references:HashRaw"`
+	Pool     PoolHash     `gorm:"foreignKey:PoolHash;references:HashRaw"`
+	Redeemer *Redeemer    `gorm:"foreignKey:RedeemerHash;references:Hash"`
 }
 
 func (Delegation) TableName() string {
@@ -193,12 +193,12 @@ func (Delegation) TableName() string {
 
 // Reward represents staking rewards
 type Reward struct {
-	AddrHash       []byte  `gorm:"type:VARBINARY(28);primaryKey"`
-	Type           string  `gorm:"type:VARCHAR(16);primaryKey"`
-	EarnedEpoch    uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	SpendableEpoch uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	Amount         int64   `gorm:"type:BIGINT;not null"`
-	PoolHash       []byte  `gorm:"type:VARBINARY(28);index"`
+	AddrHash       []byte `gorm:"type:VARBINARY(28);primaryKey"`
+	Type           string `gorm:"type:VARCHAR(16);primaryKey"`
+	EarnedEpoch    uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	SpendableEpoch uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	Amount         int64  `gorm:"type:BIGINT;not null"`
+	PoolHash       []byte `gorm:"type:VARBINARY(28);index"`
 
 	// Relationships
 	Addr StakeAddress `gorm:"foreignKey:AddrHash;references:HashRaw"`
@@ -211,10 +211,10 @@ func (Reward) TableName() string {
 
 // Withdrawal represents rewards withdrawal
 type Withdrawal struct {
-	TxHash       []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	AddrHash     []byte  `gorm:"type:VARBINARY(28);primaryKey"`
-	Amount       int64   `gorm:"type:BIGINT;not null"`
-	RedeemerHash []byte  `gorm:"type:VARBINARY(32);index"`
+	TxHash       []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	AddrHash     []byte `gorm:"type:VARBINARY(28);primaryKey"`
+	Amount       int64  `gorm:"type:BIGINT;not null"`
+	RedeemerHash []byte `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
 	Tx       Tx           `gorm:"foreignKey:TxHash;references:Hash"`
@@ -277,9 +277,9 @@ func (RewardRest) TableName() string {
 
 // EpochStakeProgress represents stake snapshot progress
 type EpochStakeProgress struct {
-	EpochNo    uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
-	Completed  bool   `gorm:"not null;default:false"`
-	StartedAt  *uint64 `gorm:"type:BIGINT UNSIGNED"`
+	EpochNo     uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
+	Completed   bool    `gorm:"not null;default:false"`
+	StartedAt   *uint64 `gorm:"type:BIGINT UNSIGNED"`
 	CompletedAt *uint64 `gorm:"type:BIGINT UNSIGNED"`
 }
 
@@ -314,12 +314,12 @@ func (ReservedPoolTicker) TableName() string {
 
 // InstantReward represents instant rewards (MIR)
 type InstantReward struct {
-	TxHash        []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	CertIndex     uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	Type          string  `gorm:"type:VARCHAR(16);primaryKey"`
-	AddrHash      []byte  `gorm:"type:VARBINARY(28);primaryKey"`
-	Amount        int64   `gorm:"type:BIGINT;not null"`
-	SpendableEpoch uint32  `gorm:"type:INT UNSIGNED;not null"`
+	TxHash         []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	CertIndex      uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	Type           string `gorm:"type:VARCHAR(16);primaryKey"`
+	AddrHash       []byte `gorm:"type:VARBINARY(28);primaryKey"`
+	Amount         int64  `gorm:"type:BIGINT;not null"`
+	SpendableEpoch uint32 `gorm:"type:INT UNSIGNED;not null"`
 
 	// Relationships
 	Tx   Tx           `gorm:"foreignKey:TxHash;references:Hash"`
@@ -331,22 +331,22 @@ func (InstantReward) TableName() string {
 }
 
 // Remove all BeforeCreate hooks since we don't need ID management
-func (s *StakeAddress) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *PoolHash) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *PoolUpdate) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *PoolRelay) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *PoolRetire) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *PoolOwner) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *PoolMetadataRef) BeforeCreate(tx *gorm.DB) error { return nil }
-func (s *StakeRegistration) BeforeCreate(tx *gorm.DB) error { return nil }
+func (s *StakeAddress) BeforeCreate(tx *gorm.DB) error        { return nil }
+func (p *PoolHash) BeforeCreate(tx *gorm.DB) error            { return nil }
+func (p *PoolUpdate) BeforeCreate(tx *gorm.DB) error          { return nil }
+func (p *PoolRelay) BeforeCreate(tx *gorm.DB) error           { return nil }
+func (p *PoolRetire) BeforeCreate(tx *gorm.DB) error          { return nil }
+func (p *PoolOwner) BeforeCreate(tx *gorm.DB) error           { return nil }
+func (p *PoolMetadataRef) BeforeCreate(tx *gorm.DB) error     { return nil }
+func (s *StakeRegistration) BeforeCreate(tx *gorm.DB) error   { return nil }
 func (s *StakeDeregistration) BeforeCreate(tx *gorm.DB) error { return nil }
-func (d *Delegation) BeforeCreate(tx *gorm.DB) error { return nil }
-func (r *Reward) BeforeCreate(tx *gorm.DB) error { return nil }
-func (w *Withdrawal) BeforeCreate(tx *gorm.DB) error { return nil }
-func (e *EpochStake) BeforeCreate(tx *gorm.DB) error { return nil }
-func (p *PoolStat) BeforeCreate(tx *gorm.DB) error { return nil }
-func (r *RewardRest) BeforeCreate(tx *gorm.DB) error { return nil }
-func (e *EpochStakeProgress) BeforeCreate(tx *gorm.DB) error { return nil }
-func (d *DelistedPool) BeforeCreate(tx *gorm.DB) error { return nil }
-func (r *ReservedPoolTicker) BeforeCreate(tx *gorm.DB) error { return nil }
-func (i *InstantReward) BeforeCreate(tx *gorm.DB) error { return nil }
+func (d *Delegation) BeforeCreate(tx *gorm.DB) error          { return nil }
+func (r *Reward) BeforeCreate(tx *gorm.DB) error              { return nil }
+func (w *Withdrawal) BeforeCreate(tx *gorm.DB) error          { return nil }
+func (e *EpochStake) BeforeCreate(tx *gorm.DB) error          { return nil }
+func (p *PoolStat) BeforeCreate(tx *gorm.DB) error            { return nil }
+func (r *RewardRest) BeforeCreate(tx *gorm.DB) error          { return nil }
+func (e *EpochStakeProgress) BeforeCreate(tx *gorm.DB) error  { return nil }
+func (d *DelistedPool) BeforeCreate(tx *gorm.DB) error        { return nil }
+func (r *ReservedPoolTicker) BeforeCreate(tx *gorm.DB) error  { return nil }
+func (i *InstantReward) BeforeCreate(tx *gorm.DB) error       { return nil }

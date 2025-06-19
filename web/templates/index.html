@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nectar Dashboard</title>
+    <link rel="icon" href="data:,">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <style>
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-blue-400 mb-2">NECTAR INDEXER</h1>
+            <p class="text-gray-400">Cardano Blockchain Indexer Dashboard</p>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="bg-gray-800 rounded-lg p-4 mb-6" id="status-container"
+             hx-get="/partials/status" 
+             hx-trigger="load, every 1s">
+            <div class="flex justify-between items-center">
+                <div>
+                    <span class="text-green-400">⚡ Running</span>
+                    <span class="ml-4">Era: <span class="font-bold">Loading...</span></span>
+                </div>
+                <div>
+                    <span>Slot: <span class="font-mono">0</span> / <span class="font-mono">0</span></span>
+                    <span class="ml-4">Sync: <span class="font-bold">0.0%</span></span>
+                    <span class="ml-4">Speed: <span class="font-bold">0.0 b/s</span></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Era Progress -->
+        <div class="bg-gray-800 rounded-lg p-6 mb-6">
+            <h2 class="text-xl font-bold mb-4 text-blue-400">Era Progress</h2>
+            <div class="space-y-3" id="era-progress" 
+                 hx-get="/partials/eras" 
+                 hx-trigger="load, every 2s">
+                <div class="animate-pulse">Loading era progress...</div>
+            </div>
+        </div>
+
+        <!-- Performance Metrics -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+            <div class="bg-gray-800 rounded-lg p-6">
+                <h3 class="text-lg font-bold mb-4 text-blue-400">Performance</h3>
+                <div id="performance-metrics" 
+                     hx-get="/api/performance" 
+                     hx-trigger="load, every 1s"
+                     hx-swap="innerHTML">
+                    <p>Blocks/sec: <span class="font-mono">0.0</span></p>
+                    <p>Total Blocks: <span class="font-mono">0</span></p>
+                    <p>Memory: <span class="font-mono">0 MB</span></p>
+                    <p>CPU: <span class="font-mono">0%</span></p>
+                </div>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-6">
+                <h3 class="text-lg font-bold mb-4 text-blue-400">Activity Feed</h3>
+                <div id="activity-feed" class="space-y-2 max-h-40 overflow-y-auto"
+                     hx-get="/partials/activities" 
+                     hx-trigger="load, every 1s">
+                    <div class="text-gray-400 text-sm">Waiting for activities...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Error Monitor -->
+        <div class="bg-gray-800 rounded-lg p-6">
+            <h3 class="text-lg font-bold mb-4 text-red-400">Error Monitor</h3>
+            <div id="error-monitor">
+                <p>Total Errors: <span class="font-mono">0</span></p>
+                <div class="mt-2 space-y-1" id="recent-errors"
+                     hx-get="/partials/errors" 
+                     hx-trigger="load, every 2s">
+                    <div class="text-gray-400 text-sm">No errors reported</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection
+        let ws = null;
+        let reconnectInterval = null;
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                // Connection status element doesn't exist, skip updating it
+                if (reconnectInterval) {
+                    clearInterval(reconnectInterval);
+                    reconnectInterval = null;
+                }
+            };
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+            };
+            
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                if (!reconnectInterval) {
+                    reconnectInterval = setInterval(() => {
+                        console.log('Attempting to reconnect...');
+                        connectWebSocket();
+                    }, 5000);
+                }
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function handleWebSocketMessage(message) {
+            // Handle different message types
+            switch(message.type) {
+                case 'status':
+                    updateStatus(message.data);
+                    break;
+                case 'era':
+                    updateEraProgress(message.data);
+                    break;
+                case 'activity':
+                    addActivity(message.data);
+                    break;
+                case 'error':
+                    updateError(message.data);
+                    break;
+                case 'performance':
+                    updatePerformance(message.data);
+                    break;
+            }
+        }
+
+        function updateStatus(data) {
+            // Update status display - let HTMX handle this
+            console.log('Status update:', data);
+        }
+        
+        function updateEraProgress(data) {
+            // Era updates - let HTMX handle this
+            console.log('Era progress:', data);
+        }
+        
+        function addActivity(data) {
+            // Activity updates - let HTMX handle this
+            console.log('New activity:', data);
+        }
+        
+        function updateError(data) {
+            // Error updates - let HTMX handle this
+            console.log('Error update:', data);
+        }
+        
+        function updatePerformance(data) {
+            // Performance updates - let HTMX handle this
+            console.log('Performance update:', data);
+        }
+
+        // Initial load
+        connectWebSocket();
+        
+        // Load initial data via HTMX
+        htmx.onLoad(function(content) {
+            // Trigger initial data loads
+            htmx.trigger('#era-progress', 'load');
+        });
+    </script>
+</body>
+</html>

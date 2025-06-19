@@ -6,6 +6,7 @@ package statequery
 import (
 	"fmt"
 	"log"
+	unifiederrors "nectar/errors"
 	"nectar/models"
 	"os"
 	"strconv"
@@ -34,32 +35,32 @@ type RewardParameters struct {
 // These can be overridden via environment variables
 func DefaultRewardParameters() RewardParameters {
 	params := RewardParameters{
-		TreasuryTax:       0.20,                      // 20% to treasury
-		MonetaryExpansion: 0.003,                     // 0.3% per epoch
-		OptimalPoolCount:  500,                       // k=500
-		InfluenceFactor:   0.3,                       // a0=0.3
-		TotalSupply:       45_000_000_000_000_000,    // 45B ADA
+		TreasuryTax:       0.20,                   // 20% to treasury
+		MonetaryExpansion: 0.003,                  // 0.3% per epoch
+		OptimalPoolCount:  500,                    // k=500
+		InfluenceFactor:   0.3,                    // a0=0.3
+		TotalSupply:       45_000_000_000_000_000, // 45B ADA
 	}
-	
+
 	// Allow environment overrides for testing or different networks
 	if tax := os.Getenv("CARDANO_TREASURY_TAX"); tax != "" {
 		if val, err := strconv.ParseFloat(tax, 64); err == nil {
 			params.TreasuryTax = val
 		}
 	}
-	
+
 	if expansion := os.Getenv("CARDANO_MONETARY_EXPANSION"); expansion != "" {
 		if val, err := strconv.ParseFloat(expansion, 64); err == nil {
 			params.MonetaryExpansion = val
 		}
 	}
-	
+
 	if poolCount := os.Getenv("CARDANO_OPTIMAL_POOL_COUNT"); poolCount != "" {
 		if val, err := strconv.ParseUint(poolCount, 10, 32); err == nil {
 			params.OptimalPoolCount = uint32(val)
 		}
 	}
-	
+
 	return params
 }
 
@@ -92,7 +93,7 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 	treasuryReward := uint64(float64(totalRewardPot) * rc.rewardParams.TreasuryTax)
 	poolRewards := totalRewardPot - treasuryReward
 
-	log.Printf("Total reward pot: %d, Treasury: %d, Pools: %d", 
+	log.Printf("Total reward pot: %d, Treasury: %d, Pools: %d",
 		totalRewardPot, treasuryReward, poolRewards)
 
 	// Get active pools and their performance
@@ -113,16 +114,16 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 	for _, pool := range pools {
 		// Calculate pool rewards
 		poolReward, delegatorRewards := rc.calculatePoolRewards(pool, poolRewards, epochNo-2)
-		
+
 		// Store pool leader reward
 		if poolReward > 0 && len(pool.RewardAddrHash) > 0 {
 			// Verify stake address exists before creating reward
 			var exists bool
 			if err := tx.Model(&models.StakeAddress{}).Select("count(*) > 0").Where("hash_raw = ?", pool.RewardAddrHash).Find(&exists).Error; err != nil || !exists {
-				log.Printf("[WARNING] Skipping leader reward - stake address doesn't exist")
+				unifiederrors.Get().Warning("RewardCalculator", "LeaderReward", "Skipping leader reward - stake address doesn't exist")
 				continue
 			}
-			
+
 			leaderReward := &models.Reward{
 				AddrHash:       pool.RewardAddrHash,
 				Type:           "leader",
@@ -132,7 +133,7 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 				PoolHash:       pool.PoolHash,
 			}
 			if err := tx.Create(leaderReward).Error; err != nil {
-				log.Printf("[WARNING] Failed to create leader reward: %v", err)
+				unifiederrors.Get().Warning("RewardCalculator", "CreateLeaderReward", fmt.Sprintf("Failed to create leader reward: %v", err))
 				continue
 			}
 			rewardCount++
@@ -143,14 +144,14 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 			if amount > 0 && len(addrHashStr) > 0 {
 				// Convert string back to bytes
 				addrHash := []byte(addrHashStr)
-				
+
 				// Verify stake address exists before creating reward
 				var exists bool
 				if err := tx.Model(&models.StakeAddress{}).Select("count(*) > 0").Where("hash_raw = ?", addrHash).Find(&exists).Error; err != nil || !exists {
-					log.Printf("[WARNING] Skipping delegator reward - stake address doesn't exist")
+					unifiederrors.Get().Warning("RewardCalculator", "DelegatorReward", "Skipping delegator reward - stake address doesn't exist")
 					continue
 				}
-				
+
 				delegatorReward := &models.Reward{
 					AddrHash:       addrHash,
 					Type:           "member",
@@ -160,7 +161,7 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 					PoolHash:       pool.PoolHash,
 				}
 				if err := tx.Create(delegatorReward).Error; err != nil {
-					log.Printf("[WARNING] Failed to create delegator reward: %v", err)
+					unifiederrors.Get().Warning("RewardCalculator", "CreateDelegatorReward", fmt.Sprintf("Failed to create delegator reward: %v", err))
 					continue
 				}
 				rewardCount++
@@ -177,7 +178,7 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 			HashRaw: []byte("treasury_system_addr"),
 			View:    "treasury_system",
 		}).Error; err != nil {
-			log.Printf("[WARNING] Failed to create treasury address: %v", err)
+			unifiederrors.Get().Warning("RewardCalculator", "CreateTreasuryAddress", fmt.Sprintf("Failed to create treasury address: %v", err))
 		} else {
 			treasuryRest := &models.RewardRest{
 				AddrHash:       treasuryAddr.HashRaw,
@@ -204,16 +205,16 @@ func (rc *RewardCalculator) CalculateEpochRewards(epochNo uint32) error {
 func (rc *RewardCalculator) calculateRewardPot(epochNo uint32) uint64 {
 	// Simplified calculation: ρ * (totalSupply - circulatingSupply)
 	// In reality, this depends on reserves
-	
+
 	// Estimate reserves (decreases over time)
 	reserveFraction := 1.0 - (float64(epochNo) * 0.002) // Rough approximation
 	if reserveFraction < 0.3 {
 		reserveFraction = 0.3 // Minimum reserves
 	}
-	
+
 	reserves := uint64(float64(rc.rewardParams.TotalSupply) * reserveFraction)
 	rewardPot := uint64(float64(reserves) * rc.rewardParams.MonetaryExpansion)
-	
+
 	return rewardPot
 }
 
@@ -302,13 +303,13 @@ func (rc *RewardCalculator) calculatePoolRewards(pool PoolPerformance, totalPool
 	delegatorRewards := make(map[string]uint64)
 	if poolTotalReward > operatorReward {
 		remainingRewards := poolTotalReward - operatorReward
-		
+
 		// Get delegators for this pool
 		var delegations []struct {
 			AddrHash []byte
 			Amount   uint64
 		}
-		
+
 		// Query delegations active during this epoch
 		query := `
 			SELECT 
@@ -329,14 +330,14 @@ func (rc *RewardCalculator) calculatePoolRewards(pool PoolPerformance, totalPool
 			)
 			GROUP BY d.addr_hash
 		`
-		
+
 		if err := rc.db.Raw(query, pool.PoolHash, epochNo, epochNo).Scan(&delegations).Error; err == nil {
 			// Distribute rewards proportionally
 			var totalDelegated uint64
 			for _, d := range delegations {
 				totalDelegated += d.Amount
 			}
-			
+
 			if totalDelegated > 0 {
 				for _, d := range delegations {
 					share := float64(d.Amount) / float64(totalDelegated)
@@ -363,7 +364,7 @@ func (rc *RewardCalculator) ProcessRefunds(epochNo uint32) error {
 		AddrHash []byte
 		Deposit  int64
 	}
-	
+
 	query := `
 		SELECT sd.addr_hash, 2000000 as deposit
 		FROM stake_deregistrations sd
@@ -372,7 +373,7 @@ func (rc *RewardCalculator) ProcessRefunds(epochNo uint32) error {
 		WHERE b.epoch_no = ?
 		GROUP BY sd.addr_hash
 	`
-	
+
 	err := rc.db.Raw(query, epochNo-2).Scan(&deregistrations).Error
 	if err != nil {
 		return fmt.Errorf("failed to get deregistrations: %w", err)
@@ -389,7 +390,7 @@ func (rc *RewardCalculator) ProcessRefunds(epochNo uint32) error {
 				log.Printf("[WARNING] Skipping refund - stake address doesn't exist")
 				continue
 			}
-			
+
 			refund := &models.Reward{
 				AddrHash:       dereg.AddrHash,
 				Type:           "refund",
@@ -398,7 +399,7 @@ func (rc *RewardCalculator) ProcessRefunds(epochNo uint32) error {
 				SpendableEpoch: epochNo,
 				PoolHash:       nil, // No pool for refunds
 			}
-			
+
 			if err := tx.Create(refund).Error; err != nil {
 				log.Printf("[WARNING] Failed to create refund: %v", err)
 				continue

@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"time"
-	
+
 	"gorm.io/gorm"
 )
 
@@ -29,15 +29,15 @@ type SyncCheckpoint struct {
 	TableCounts   string `gorm:"type:JSON;not null" json:"table_counts"` // JSON string of table counts
 
 	// Reference points for resume
-	LastTxHash    []byte `gorm:"type:VARBINARY(32);not null" json:"last_tx_hash"`
-	LastBlockHash []byte `gorm:"type:VARBINARY(32);not null" json:"last_block_hash"`
-	LastTxOutHash []byte `gorm:"type:VARBINARY(32);not null" json:"last_tx_out_hash"`
+	LastTxHash     []byte `gorm:"type:VARBINARY(32);not null" json:"last_tx_hash"`
+	LastBlockHash  []byte `gorm:"type:VARBINARY(32);not null" json:"last_block_hash"`
+	LastTxOutHash  []byte `gorm:"type:VARBINARY(32);not null" json:"last_tx_out_hash"`
 	LastTxOutIndex uint32 `gorm:"type:INT UNSIGNED;not null" json:"last_tx_out_index"`
 
 	// Performance stats at checkpoint
-	TotalBlocks     uint64  `gorm:"type:BIGINT UNSIGNED;not null" json:"total_blocks"`
-	TotalTxs        uint64  `gorm:"type:BIGINT UNSIGNED;not null" json:"total_txs"`
-	ProcessingRate  float64 `gorm:"type:DECIMAL(10,2);default:0.00" json:"processing_rate"`
+	TotalBlocks    uint64  `gorm:"type:BIGINT UNSIGNED;not null" json:"total_blocks"`
+	TotalTxs       uint64  `gorm:"type:BIGINT UNSIGNED;not null" json:"total_txs"`
+	ProcessingRate float64 `gorm:"type:DECIMAL(10,2);default:0.00" json:"processing_rate"`
 
 	// Notes for debugging
 	Notes string `gorm:"type:TEXT" json:"notes"`
@@ -77,7 +77,7 @@ func (CheckpointResumeLog) TableName() string {
 }
 
 // Remove all BeforeCreate hooks since we don't need ID management
-func (s *SyncCheckpoint) BeforeCreate(tx *gorm.DB) error { return nil }
+func (s *SyncCheckpoint) BeforeCreate(tx *gorm.DB) error      { return nil }
 func (c *CheckpointResumeLog) BeforeCreate(tx *gorm.DB) error { return nil }
 
 // CheckpointType constants
@@ -100,15 +100,15 @@ const (
 
 // CheckpointStats represents parsed table counts from JSON
 type CheckpointStats struct {
-	Blocks            int64 `json:"blocks"`
-	Txes              int64 `json:"txes"`
-	TxOuts            int64 `json:"tx_outs"`
-	TxIns             int64 `json:"tx_ins"`
-	StakeAddresses    int64 `json:"stake_addresses"`
-	PoolUpdates       int64 `json:"pool_updates"`
-	Delegations       int64 `json:"delegations"`
+	Blocks             int64 `json:"blocks"`
+	Txes               int64 `json:"txes"`
+	TxOuts             int64 `json:"tx_outs"`
+	TxIns              int64 `json:"tx_ins"`
+	StakeAddresses     int64 `json:"stake_addresses"`
+	PoolUpdates        int64 `json:"pool_updates"`
+	Delegations        int64 `json:"delegations"`
 	StakeRegistrations int64 `json:"stake_registrations"`
-	MultiAssets       int64 `json:"multi_assets"`
+	MultiAssets        int64 `json:"multi_assets"`
 }
 
 // Helper methods for SyncCheckpoint

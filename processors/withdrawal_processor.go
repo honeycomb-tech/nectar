@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	unifiederrors "nectar/errors"
 	"nectar/models"
+	"strings"
 
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // WithdrawalProcessor handles processing reward withdrawals for all Cardano eras
@@ -38,7 +41,7 @@ func (wp *WithdrawalProcessor) ProcessWithdrawals(ctx context.Context, tx *gorm.
 
 	for rewardAccount, amount := range withdrawals {
 		if err := wp.processWithdrawal(tx, txHash, rewardAccount, amount); err != nil {
-			log.Printf("[WARNING] Withdrawal processing error: %v", err)
+			unifiederrors.Get().Warning("WithdrawalProcessor", "ProcessWithdrawal", fmt.Sprintf("Withdrawal processing error: %v", err))
 			continue
 		}
 	}
@@ -76,9 +79,9 @@ func (wp *WithdrawalProcessor) processWithdrawal(tx *gorm.DB, txHash []byte, rew
 	// DEBUG: Verify stake address actually exists in database
 	var existsCheck models.StakeAddress
 	if err := tx.Where("hash_raw = ?", stakeAddrHash).First(&existsCheck).Error; err != nil {
-		log.Printf("[WARNING] STAKE ADDRESS VERIFICATION FAILED: hash %x does not exist in database (reward account: %s)", stakeAddrHash, rewardAccountStr)
-		log.Printf("[WARNING] Attempting to re-create stake address from hash: %x", stakeKeyHash[:])
-		
+		unifiederrors.Get().Warning("WithdrawalProcessor", "StakeAddressVerification", fmt.Sprintf("STAKE ADDRESS VERIFICATION FAILED: hash %x does not exist in database (reward account: %s)", stakeAddrHash, rewardAccountStr))
+		unifiederrors.Get().Warning("WithdrawalProcessor", "RecreateStakeAddress", fmt.Sprintf("Attempting to re-create stake address from hash: %x", stakeKeyHash[:]))
+
 		// Try to get/create again with the transaction context
 		newStakeAddrHash, createErr := wp.stakeAddressCache.GetOrCreateStakeAddressFromBytesWithTx(tx, stakeKeyHash[:])
 		if createErr != nil {
@@ -99,9 +102,15 @@ func (wp *WithdrawalProcessor) processWithdrawal(tx *gorm.DB, txHash []byte, rew
 		Amount:   int64(amount),
 	}
 
-	if err := tx.Create(withdrawal).Error; err != nil {
-		log.Printf("[WARNING] WITHDRAWAL CREATION FAILED: tx_hash=%x, addr_hash=%x, amount=%d, error=%v", txHash, stakeAddrHash, amount, err)
-		return fmt.Errorf("failed to create withdrawal record: %w", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "addr_hash"}},
+		DoNothing: true,
+	}).Create(withdrawal).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			log.Printf("[WARNING] WITHDRAWAL CREATION FAILED: tx_hash=%x, addr_hash=%x, amount=%d, error=%v", txHash, stakeAddrHash, amount, err)
+			return fmt.Errorf("failed to create withdrawal record: %w", err)
+		}
 	}
 
 	if GlobalLoggingConfig.LogStakeOperations.Load() {
@@ -119,7 +128,9 @@ func (wp *WithdrawalProcessor) ProcessWithdrawalsFromTransaction(ctx context.Con
 
 	// Try to extract withdrawals using interface assertion
 	switch txWithWithdrawals := transaction.(type) {
-	case interface{ Withdrawals() map[*common.Address]uint64 }:
+	case interface {
+		Withdrawals() map[*common.Address]uint64
+	}:
 		withdrawalsMap := txWithWithdrawals.Withdrawals()
 		// Convert map[*common.Address]uint64 to map[string]uint64
 		withdrawals := make(map[string]uint64)
@@ -228,7 +239,7 @@ func (wp *WithdrawalProcessor) extractRewardAddressComponents(rewardAccountStr s
 	}
 
 	stakeKeyHash := rewardAddr.StakeKeyHash()
-	
+
 	// Extract network ID from address bytes
 	addrBytes, _ := rewardAddr.Bytes()
 	networkID := uint8(0) // Default to mainnet
@@ -236,12 +247,12 @@ func (wp *WithdrawalProcessor) extractRewardAddressComponents(rewardAccountStr s
 		// Network ID is in the lower 4 bits of the first byte
 		networkID = addrBytes[0] & 0x0F
 	}
-	
+
 	components := &RewardAddressComponents{
-		Address:       rewardAccountStr,
-		StakeKeyHash:  &stakeKeyHash,
-		NetworkID:     networkID,
-		AddressType:   rewardAddr.Type(),
+		Address:      rewardAccountStr,
+		StakeKeyHash: &stakeKeyHash,
+		NetworkID:    networkID,
+		AddressType:  rewardAddr.Type(),
 	}
 
 	return components, nil
@@ -324,10 +335,16 @@ func (wp *WithdrawalProcessor) ProcessBulkWithdrawals(ctx context.Context, tx *g
 			Amount:   int64(item.Amount),
 		}
 
-		if err := tx.Create(withdrawal).Error; err != nil {
-			wp.errorCollector.ProcessingWarning("WithdrawalProcessor", "processWithdrawal",
-				fmt.Sprintf("failed to create withdrawal record: %v", err),
-				fmt.Sprintf("tx_hash:%x,reward_account:%s", item.TxHash, item.RewardAccount))
+		// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "addr_hash"}},
+			DoNothing: true,
+		}).Create(withdrawal).Error; err != nil {
+			if !strings.Contains(err.Error(), "Duplicate entry") {
+				wp.errorCollector.ProcessingWarning("WithdrawalProcessor", "processWithdrawal",
+					fmt.Sprintf("failed to create withdrawal record: %v", err),
+					fmt.Sprintf("tx_hash:%x,reward_account:%s", item.TxHash, item.RewardAccount))
+			}
 			continue
 		}
 	}

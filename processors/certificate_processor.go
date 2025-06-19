@@ -3,10 +3,14 @@ package processors
 import (
 	"fmt"
 	"log"
+	"nectar/database"
+	unifiederrors "nectar/errors"
 	"nectar/models"
+	"strings"
 
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // CertificateProcessor handles certificate processing
@@ -14,7 +18,7 @@ type CertificateProcessor struct {
 	db                *gorm.DB
 	stakeAddressCache *StakeAddressCache
 	poolHashCache     map[string]bool // Pool hash existence cache
-	metadataFetcher   MetadataFetcher   // Interface for metadata fetching
+	metadataFetcher   MetadataFetcher // Interface for metadata fetching
 }
 
 // MetadataFetcher interface for off-chain metadata fetching
@@ -30,10 +34,10 @@ func NewCertificateProcessor(db *gorm.DB, stakeAddressCache *StakeAddressCache) 
 		stakeAddressCache: stakeAddressCache,
 		poolHashCache:     make(map[string]bool, 3000), // Pre-allocate for ~3K pools
 	}
-	
+
 	// Pre-load all pool hashes on startup
 	cp.preloadPoolHashes()
-	
+
 	return cp
 }
 
@@ -44,10 +48,27 @@ func (cp *CertificateProcessor) SetMetadataFetcher(fetcher MetadataFetcher) {
 
 // ProcessCertificates processes all certificates in a transaction (Shelley+)
 func (cp *CertificateProcessor) ProcessCertificates(ctx interface{}, tx *gorm.DB, txHash []byte, certificates []interface{}) error {
+	// Safety check for nil certificates
+	if certificates == nil || len(certificates) == 0 {
+		return nil
+	}
+	
 	for i, cert := range certificates {
+		// Skip nil certificates
+		if cert == nil {
+			log.Printf("[WARNING] Nil certificate at index %d in tx %x", i, txHash)
+			continue
+		}
+		
 		if err := cp.processCertificate(tx, txHash, i, cert); err != nil {
-			log.Printf("[WARNING] Failed to process certificate %d: %v", i, err)
-			// Continue processing other certificates
+			// Check if this is a retryable error
+			if database.IsRetryableError(err) {
+				// For retryable errors, propagate up
+				return fmt.Errorf("certificate %d: %w", i, err)
+			}
+			unifiederrors.Get().Warning("CertificateProcessor", "ProcessCertificate", 
+				fmt.Sprintf("Failed to process certificate %d: %v", i, err))
+			// Continue processing other certificates for non-retryable errors
 		}
 	}
 	return nil
@@ -67,13 +88,13 @@ func (cp *CertificateProcessor) processCertificate(tx *gorm.DB, txHash []byte, c
 		return cp.processPoolRegistration(tx, txHash, certIndex, c)
 	case *common.PoolRetirementCertificate:
 		return cp.processPoolRetirement(tx, txHash, certIndex, c)
-		
+
 	// Shelley-MA era certificates (types 5-6)
 	case *common.GenesisKeyDelegationCertificate:
 		return cp.processGenesisKeyDelegation(tx, txHash, certIndex, c)
 	case *common.MoveInstantaneousRewardsCertificate:
 		return cp.processMoveInstantaneousRewards(tx, txHash, certIndex, c)
-		
+
 	// Conway era certificates (CIP-1694)
 	case *common.RegistrationCertificate:
 		return cp.processConwayRegistration(tx, txHash, certIndex, c)
@@ -99,7 +120,7 @@ func (cp *CertificateProcessor) processCertificate(tx *gorm.DB, txHash []byte, c
 		return cp.processDeregistrationDrep(tx, txHash, certIndex, c)
 	case *common.UpdateDrepCertificate:
 		return cp.processUpdateDrep(tx, txHash, certIndex, c)
-		
+
 	default:
 		// Only log unknown certificates in debug mode
 		if GlobalLoggingConfig.LogCertificateDetails.Load() {
@@ -116,7 +137,7 @@ func (cp *CertificateProcessor) processStakeRegistration(tx *gorm.DB, txHash []b
 
 	// Ensure stake address exists
 	if err := cp.stakeAddressCache.EnsureStakeAddressFromBytesWithTx(tx, stakeAddrBytes); err != nil {
-		log.Printf("[WARNING] Failed to ensure stake address: %v", err)
+		unifiederrors.Get().Warning("CertificateProcessor", "EnsureStakeAddress", fmt.Sprintf("Failed to ensure stake address: %v", err))
 		return nil // Continue processing
 	}
 
@@ -127,8 +148,14 @@ func (cp *CertificateProcessor) processStakeRegistration(tx *gorm.DB, txHash []b
 		AddrHash:  stakeAddrBytes,
 	}
 
-	if err := tx.Create(stakeRegistration).Error; err != nil {
-		log.Printf("[WARNING] Failed to create stake registration: %v", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "cert_index"}},
+		DoNothing: true,
+	}).Create(stakeRegistration).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			unifiederrors.Get().Warning("CertificateProcessor", "CreateStakeRegistration", fmt.Sprintf("Failed to create stake registration: %v", err))
+		}
 		return nil // Continue processing
 	}
 
@@ -142,7 +169,7 @@ func (cp *CertificateProcessor) processStakeDeregistration(tx *gorm.DB, txHash [
 
 	// Ensure stake address exists
 	if err := cp.stakeAddressCache.EnsureStakeAddressFromBytesWithTx(tx, stakeAddrBytes); err != nil {
-		log.Printf("[WARNING] Failed to ensure stake address: %v", err)
+		unifiederrors.Get().Warning("CertificateProcessor", "EnsureStakeAddress", fmt.Sprintf("Failed to ensure stake address: %v", err))
 		return nil
 	}
 
@@ -153,8 +180,14 @@ func (cp *CertificateProcessor) processStakeDeregistration(tx *gorm.DB, txHash [
 		AddrHash:  stakeAddrBytes,
 	}
 
-	if err := tx.Create(stakeDeregistration).Error; err != nil {
-		log.Printf("[WARNING] Failed to create stake deregistration: %v", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "cert_index"}},
+		DoNothing: true,
+	}).Create(stakeDeregistration).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			log.Printf("[WARNING] Failed to create stake deregistration: %v", err)
+		}
 		return nil
 	}
 
@@ -175,7 +208,7 @@ func (cp *CertificateProcessor) processStakeDelegation(tx *gorm.DB, txHash []byt
 
 	// Ensure stake address exists
 	if err := cp.stakeAddressCache.EnsureStakeAddressFromBytesWithTx(tx, stakeAddrBytes); err != nil {
-		log.Printf("[WARNING] Failed to ensure stake address: %v", err)
+		unifiederrors.Get().Warning("CertificateProcessor", "EnsureStakeAddress", fmt.Sprintf("Failed to ensure stake address: %v", err))
 		return nil
 	}
 
@@ -202,8 +235,14 @@ func (cp *CertificateProcessor) processStakeDelegation(tx *gorm.DB, txHash []byt
 		SlotNo:        slotNo,
 	}
 
-	if err := tx.Create(delegation).Error; err != nil {
-		log.Printf("[WARNING] Failed to create delegation: %v", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "cert_index"}},
+		DoNothing: true,
+	}).Create(delegation).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			log.Printf("[WARNING] Failed to create delegation: %v", err)
+		}
 		return nil
 	}
 
@@ -244,8 +283,14 @@ func (cp *CertificateProcessor) processPoolRegistration(tx *gorm.DB, txHash []by
 		ActiveEpochNo:  uint32(activeEpochNo),
 	}
 
-	if err := tx.Create(poolUpdate).Error; err != nil {
-		log.Printf("[WARNING] Failed to create pool update: %v", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully  
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "cert_index"}},
+		DoNothing: true,
+	}).Create(poolUpdate).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			log.Printf("[WARNING] Failed to create pool update: %v", err)
+		}
 		return nil
 	}
 
@@ -287,8 +332,14 @@ func (cp *CertificateProcessor) processPoolRetirement(tx *gorm.DB, txHash []byte
 		AnnouncedTxHash: txHash,
 	}
 
-	if err := tx.Create(poolRetire).Error; err != nil {
-		log.Printf("[WARNING] Failed to create pool retire: %v", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "cert_index"}},
+		DoNothing: true,
+	}).Create(poolRetire).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			log.Printf("[WARNING] Failed to create pool retire: %v", err)
+		}
 		return nil
 	}
 
@@ -300,19 +351,19 @@ func (cp *CertificateProcessor) processPoolRetirement(tx *gorm.DB, txHash []byte
 // preloadPoolHashes loads all pool hashes into memory cache
 func (cp *CertificateProcessor) preloadPoolHashes() {
 	var poolHashes []models.PoolHash
-	
+
 	// Load all pool hashes
 	if err := cp.db.Find(&poolHashes).Error; err != nil {
 		log.Printf("[WARNING] Failed to preload pool hashes: %v", err)
 		return
 	}
-	
+
 	// Populate cache
 	for _, ph := range poolHashes {
 		hashStr := fmt.Sprintf("%x", ph.HashRaw)
 		cp.poolHashCache[hashStr] = true
 	}
-	
+
 	// Only log once on startup, not for every block
 	if GlobalLoggingConfig.LogCertificateDetails.Load() {
 		log.Printf("[OK] Preloaded %d pool hashes into cache", len(poolHashes))
@@ -326,27 +377,35 @@ func (cp *CertificateProcessor) ensurePoolHash(tx *gorm.DB, hashBytes []byte) er
 	if exists := cp.poolHashCache[hashStr]; exists {
 		return nil
 	}
-	
+
 	// Not in cache, check database
 	var poolHash models.PoolHash
 	err := tx.Where("hash_raw = ?", hashBytes).First(&poolHash).Error
-	
+
 	if err == gorm.ErrRecordNotFound {
-		// Create new pool hash
+		// Create new pool hash with ON DUPLICATE KEY UPDATE
 		poolHash = models.PoolHash{
 			HashRaw: hashBytes,
 			View:    hashStr,
 		}
-		if err := tx.Create(&poolHash).Error; err != nil {
-			return err
+		// Use raw SQL to handle duplicates gracefully
+		if err := tx.Exec(
+			"INSERT INTO pool_hashes (hash_raw, view) VALUES (?, ?) ON DUPLICATE KEY UPDATE hash_raw = hash_raw",
+			hashBytes, hashStr,
+		).Error; err != nil {
+			// If still fails, it might be a race condition - just log and continue
+			if !strings.Contains(err.Error(), "Duplicate entry") {
+				return err
+			}
+			log.Printf("[DEBUG] Pool hash already exists (race condition): %s", hashStr)
 		}
 	} else if err != nil {
 		return err
 	}
-	
+
 	// Update cache
 	cp.poolHashCache[hashStr] = true
-	
+
 	return nil
 }
 
@@ -358,12 +417,12 @@ func (cp *CertificateProcessor) calculateEpochFromTransaction(tx *gorm.DB, txHas
 		Joins("JOIN txes ON txes.block_hash = blocks.hash").
 		Where("txes.hash = ?", txHash).
 		First(&block).Error
-		
+
 	if err != nil {
 		log.Printf("[WARNING] Failed to get block for tx: %v", err)
 		return 0
 	}
-	
+
 	// Calculate epoch from slot (Shelley: 432000 slots per epoch)
 	return *block.SlotNo / 432000
 }
@@ -376,7 +435,7 @@ func (cp *CertificateProcessor) getSlotFromTransaction(tx *gorm.DB, txHash []byt
 		Where("txes.hash = ?", txHash).
 		Select("blocks.slot_no").
 		Scan(&slotNo)
-	
+
 	return slotNo
 }
 
@@ -393,19 +452,25 @@ func (cp *CertificateProcessor) processPoolMetadata(tx *gorm.DB, poolHash, txHas
 		Url:              cert.PoolMetadata.Url,
 		RegisteredTxHash: txHash,
 	}
-	
-	if err := tx.Create(poolMetadataRef).Error; err != nil {
-		log.Printf("[WARNING] Failed to create pool metadata ref: %v", err)
+
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "hash"}},
+		DoNothing: true,
+	}).Create(poolMetadataRef).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			log.Printf("[WARNING] Failed to create pool metadata ref: %v", err)
+		}
 		return nil
 	}
-	
+
 	// Queue metadata for fetching if fetcher is available
 	if cp.metadataFetcher != nil {
 		if err := cp.metadataFetcher.QueuePoolMetadata(poolHash, cert.PoolMetadata.Hash[:], cert.PoolMetadata.Url, cert.PoolMetadata.Hash[:]); err != nil {
 			log.Printf("[WARNING] Failed to queue pool metadata for fetching: %v", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -454,8 +519,14 @@ func (cp *CertificateProcessor) processPoolRelays(tx *gorm.DB, updateTxHash []by
 			continue
 		}
 
-		if err := tx.Create(poolRelay).Error; err != nil {
-			log.Printf("[WARNING] Failed to create pool relay %d: %v", i, err)
+		// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "update_tx_hash"}, {Name: "update_cert_index"}, {Name: "relay_index"}},
+			DoNothing: true,
+		}).Create(poolRelay).Error; err != nil {
+			if !strings.Contains(err.Error(), "Duplicate entry") {
+				log.Printf("[WARNING] Failed to create pool relay %d: %v", i, err)
+			}
 			continue
 		}
 	}
@@ -472,7 +543,7 @@ func (cp *CertificateProcessor) processPoolOwners(tx *gorm.DB, poolHash []byte, 
 	for i, ownerKeyHash := range cert.PoolOwners {
 		// Convert owner key hash to stake address
 		ownerBytes := ownerKeyHash[:]
-		
+
 		// Ensure stake address exists for the owner
 		if err := cp.stakeAddressCache.EnsureStakeAddressFromBytesWithTx(tx, ownerBytes); err != nil {
 			log.Printf("[WARNING] Failed to ensure stake address for owner %d: %v", i, err)
@@ -485,8 +556,14 @@ func (cp *CertificateProcessor) processPoolOwners(tx *gorm.DB, poolHash []byte, 
 			OwnerHash:       ownerBytes,
 		}
 
-		if err := tx.Create(poolOwner).Error; err != nil {
-			log.Printf("[WARNING] Failed to create pool owner %d: %v", i, err)
+		// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "update_tx_hash"}, {Name: "update_cert_index"}, {Name: "owner_hash"}},
+			DoNothing: true,
+		}).Create(poolOwner).Error; err != nil {
+			if !strings.Contains(err.Error(), "Duplicate entry") {
+				log.Printf("[WARNING] Failed to create pool owner %d: %v", i, err)
+			}
 			continue
 		}
 	}
@@ -518,10 +595,10 @@ func (cp *CertificateProcessor) processMoveInstantaneousRewards(tx *gorm.DB, txH
 func (cp *CertificateProcessor) processConwayRegistration(tx *gorm.DB, txHash []byte, certIndex int, cert *common.RegistrationCertificate) error {
 	// Extract stake credential
 	stakeCredBytes := cert.StakeCredential.Credential[:]
-	
+
 	// Ensure stake address exists
 	if err := cp.stakeAddressCache.EnsureStakeAddressFromBytesWithTx(tx, stakeCredBytes); err != nil {
-		log.Printf("[WARNING] Failed to ensure stake address: %v", err)
+		unifiederrors.Get().Warning("CertificateProcessor", "EnsureStakeAddress", fmt.Sprintf("Failed to ensure stake address: %v", err))
 		return nil
 	}
 
@@ -532,8 +609,14 @@ func (cp *CertificateProcessor) processConwayRegistration(tx *gorm.DB, txHash []
 		AddrHash:  stakeCredBytes,
 	}
 
-	if err := tx.Create(stakeRegistration).Error; err != nil {
-		log.Printf("[WARNING] Failed to create Conway stake registration: %v", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "cert_index"}},
+		DoNothing: true,
+	}).Create(stakeRegistration).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			log.Printf("[WARNING] Failed to create Conway stake registration: %v", err)
+		}
 		return nil
 	}
 
@@ -544,10 +627,10 @@ func (cp *CertificateProcessor) processConwayRegistration(tx *gorm.DB, txHash []
 func (cp *CertificateProcessor) processConwayDeregistration(tx *gorm.DB, txHash []byte, certIndex int, cert *common.DeregistrationCertificate) error {
 	// Extract stake credential
 	stakeCredBytes := cert.StakeCredential.Credential[:]
-	
+
 	// Ensure stake address exists
 	if err := cp.stakeAddressCache.EnsureStakeAddressFromBytesWithTx(tx, stakeCredBytes); err != nil {
-		log.Printf("[WARNING] Failed to ensure stake address: %v", err)
+		unifiederrors.Get().Warning("CertificateProcessor", "EnsureStakeAddress", fmt.Sprintf("Failed to ensure stake address: %v", err))
 		return nil
 	}
 
@@ -558,8 +641,14 @@ func (cp *CertificateProcessor) processConwayDeregistration(tx *gorm.DB, txHash 
 		AddrHash:  stakeCredBytes,
 	}
 
-	if err := tx.Create(stakeDeregistration).Error; err != nil {
-		log.Printf("[WARNING] Failed to create Conway stake deregistration: %v", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "cert_index"}},
+		DoNothing: true,
+	}).Create(stakeDeregistration).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			log.Printf("[WARNING] Failed to create Conway stake deregistration: %v", err)
+		}
 		return nil
 	}
 

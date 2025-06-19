@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"sync"
 	"time"
+	unifiederrors "nectar/errors"
 
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
@@ -23,19 +24,19 @@ import (
 
 // Config holds configuration for the metadata fetcher
 type Config struct {
-	MaxRetries        int
-	RetryBackoff      time.Duration
-	RequestTimeout    time.Duration
-	RateLimit         rate.Limit
-	RateBurst         int
-	MaxContentSize    int64
-	UserAgent         string
-	WorkerCount       int
-	QueueSize         int
-	FetchInterval     time.Duration
-	AllowedSchemes    []string
-	MaxRedirects      int
-	ValidateJSON      bool
+	MaxRetries     int
+	RetryBackoff   time.Duration
+	RequestTimeout time.Duration
+	RateLimit      rate.Limit
+	RateBurst      int
+	MaxContentSize int64
+	UserAgent      string
+	WorkerCount    int
+	QueueSize      int
+	FetchInterval  time.Duration
+	AllowedSchemes []string
+	MaxRedirects   int
+	ValidateJSON   bool
 }
 
 // DefaultConfig returns sensible production defaults
@@ -84,7 +85,7 @@ type Fetcher struct {
 // New creates a new metadata fetcher
 func New(db *gorm.DB, config Config) *Fetcher {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	// Configure HTTP client with production settings
 	httpClient := &http.Client{
 		Timeout: config.RequestTimeout,
@@ -117,11 +118,8 @@ func New(db *gorm.DB, config Config) *Fetcher {
 
 // Start begins the metadata fetching service
 func (f *Fetcher) Start() error {
-	logger.Info("Starting metadata fetcher service",
-		"workers", f.config.WorkerCount,
-		"queue_size", f.config.QueueSize,
-		"rate_limit", f.config.RateLimit,
-	)
+	log.Printf("Starting metadata fetcher service - workers=%d, queue_size=%d, rate_limit=%v",
+		f.config.WorkerCount, f.config.QueueSize, f.config.RateLimit)
 
 	// Start worker goroutines
 	for i := 0; i < f.config.WorkerCount; i++ {
@@ -140,7 +138,7 @@ func (f *Fetcher) Start() error {
 
 // Stop gracefully shuts down the fetcher
 func (f *Fetcher) Stop() error {
-	logger.Info("Stopping metadata fetcher service")
+	log.Println("Stopping metadata fetcher service")
 	f.cancel()
 	close(f.queue)
 	f.wg.Wait()
@@ -151,7 +149,7 @@ func (f *Fetcher) Stop() error {
 func (f *Fetcher) QueuePoolMetadata(poolHash, pmrHash []byte, url string, hash []byte) error {
 	// Generate a pseudo-ID from the hash for compatibility with existing code
 	pmrID := hashToID(pmrHash)
-	
+
 	req := FetchRequest{
 		ID:           pmrID,
 		Type:         "pool",
@@ -179,7 +177,7 @@ func (f *Fetcher) QueuePoolMetadata(poolHash, pmrHash []byte, url string, hash [
 func (f *Fetcher) QueueGovernanceMetadata(anchorHash []byte, url string, hash []byte) error {
 	// Generate a pseudo-ID from the hash for compatibility with existing code
 	anchorID := hashToID(anchorHash)
-	
+
 	req := FetchRequest{
 		ID:           anchorID,
 		Type:         "governance",
@@ -204,13 +202,13 @@ func (f *Fetcher) QueueGovernanceMetadata(anchorHash []byte, url string, hash []
 // worker processes fetch requests from the queue
 func (f *Fetcher) worker(id int) {
 	defer f.wg.Done()
-	logger.Debug("Metadata worker started", "worker_id", id)
+	// Worker started (debug logging removed)
 
 	for {
 		select {
 		case req, ok := <-f.queue:
 			if !ok {
-				logger.Debug("Worker stopping, queue closed", "worker_id", id)
+				// Worker stopping, queue closed
 				return
 			}
 
@@ -233,11 +231,13 @@ func (f *Fetcher) worker(id int) {
 			f.setProcessing(req.URL, false)
 
 			if err != nil {
-				logger.Error("Failed to fetch metadata",
-					"type", req.Type,
-					"url", req.URL,
-					"error", err,
-					"retry_count", req.RetryCount,
+				// Log to unified error system
+				unifiederrors.Get().LogError(
+					unifiederrors.ErrorTypeNetwork,
+					"MetadataFetcher",
+					"Error",
+					fmt.Sprintf("Failed to fetch %s metadata from %s: %v", req.Type, req.URL, err),
+					fmt.Sprintf("retry_count=%d", req.RetryCount),
 				)
 
 				// Retry logic
@@ -256,7 +256,7 @@ func (f *Fetcher) worker(id int) {
 			}
 
 		case <-f.ctx.Done():
-			logger.Debug("Worker stopping, context cancelled", "worker_id", id)
+			// Worker stopping, context cancelled
 			return
 		}
 	}
@@ -393,7 +393,7 @@ func (f *Fetcher) storePoolMetadata(req FetchRequest, data []byte, jsonData inte
 	// Get pool and pmr hashes from context
 	poolHash := req.Context["pool_hash"].([]byte)
 	pmrHash := req.Context["pmr_hash"].([]byte)
-	
+
 	// Store in database
 	offChainData := &models.OffChainPoolData{
 		Hash:       req.ExpectedHash,
@@ -408,11 +408,7 @@ func (f *Fetcher) storePoolMetadata(req FetchRequest, data []byte, jsonData inte
 		return fmt.Errorf("failed to store pool metadata: %w", err)
 	}
 
-	logger.Info("Stored pool metadata",
-		"pool_hash", hex.EncodeToString(poolHash),
-		"ticker", poolMeta.Ticker,
-		"name", poolMeta.Name,
-	)
+	// Successfully stored pool metadata
 
 	return nil
 }
@@ -431,7 +427,7 @@ func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonDat
 	// Extract common fields
 	language, _ := govMeta["@language"].(string)
 	comment, _ := govMeta["comment"].(string)
-	
+
 	// Validate and determine type
 	isValid := f.validateGovernanceMetadata(govMeta)
 	var warning string
@@ -441,7 +437,7 @@ func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonDat
 
 	// Get anchor hash from context (already declared above)
 	// anchorHash := req.Context["anchor_hash"].([]byte)
-	
+
 	// Store main vote data
 	voteData := &models.OffChainVoteData{
 		Hash:             req.ExpectedHash,
@@ -461,7 +457,7 @@ func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonDat
 	}
 
 	// Store additional governance data based on type
-	govMeta["anchorHash"] = anchorHash // Pass anchorHash through meta
+	govMeta["anchorHash"] = anchorHash      // Pass anchorHash through meta
 	govMeta["voteDataHash"] = voteData.Hash // Pass vote data hash
 	if err := f.storeGovernanceDetails(tx, voteData.Hash, govMeta); err != nil {
 		tx.Rollback()
@@ -470,11 +466,7 @@ func (f *Fetcher) storeGovernanceMetadata(req FetchRequest, data []byte, jsonDat
 
 	tx.Commit()
 
-	logger.Info("Stored governance metadata",
-		"anchor_hash", hex.EncodeToString(anchorHash),
-		"type", govMeta["@type"],
-		"is_valid", isValid,
-	)
+	// Successfully stored governance metadata
 
 	return nil
 }
@@ -522,7 +514,7 @@ func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataHash []byte, meta 
 
 		// TODO: Get actual DRep hash from context
 		drepHashRaw := []byte{} // This should come from the transaction context
-		
+
 		drepData := &models.OffChainVoteDRepData{
 			OffChainVoteDataHash: voteDataHash,
 			DRepHashRaw:          drepHashRaw,
@@ -545,7 +537,7 @@ func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataHash []byte, meta 
 
 	default:
 		// Store as generic vote data
-		logger.Debug("Unknown governance metadata type", "type", metaType)
+		// Unknown governance metadata type
 	}
 
 	// Store authors if present
@@ -562,7 +554,7 @@ func (f *Fetcher) storeGovernanceDetails(tx *gorm.DB, voteDataHash []byte, meta 
 				}
 				// Generate hash for author
 				authorHash := models.GenerateOffChainVoteAuthorHash(voteDataHash, &name, witnessBytes)
-				
+
 				authorData := &models.OffChainVoteAuthor{
 					Hash:                 authorHash,
 					OffChainVoteDataHash: voteDataHash,
@@ -636,7 +628,7 @@ func (f *Fetcher) recordFetchError(req FetchRequest, err error) {
 	case "pool":
 		poolHash := req.Context["pool_hash"].([]byte)
 		pmrHash := req.Context["pmr_hash"].([]byte)
-		
+
 		fetchError := &models.OffChainPoolFetchError{
 			PoolHash:   poolHash,
 			PmrHash:    pmrHash,
@@ -644,23 +636,23 @@ func (f *Fetcher) recordFetchError(req FetchRequest, err error) {
 			FetchError: err.Error(),
 			RetryCount: uint32(req.RetryCount),
 		}
-		
+
 		if dbErr := f.db.Create(fetchError).Error; dbErr != nil {
-			logger.Error("Failed to record pool fetch error", "error", dbErr)
+			unifiederrors.Get().DatabaseError("MetadataFetcher", "RecordPoolError", dbErr)
 		}
 
 	case "governance":
 		anchorHash := req.Context["anchor_hash"].([]byte)
-		
+
 		fetchError := &models.OffChainVoteFetchError{
 			VotingAnchorHash: anchorHash,
 			FetchTime:        time.Now(),
 			FetchError:       err.Error(),
 			RetryCount:       uint32(req.RetryCount),
 		}
-		
+
 		if dbErr := f.db.Create(fetchError).Error; dbErr != nil {
-			logger.Error("Failed to record governance fetch error", "error", dbErr)
+			unifiederrors.Get().DatabaseError("MetadataFetcher", "RecordGovernanceError", dbErr)
 		}
 	}
 }
@@ -702,13 +694,13 @@ func (f *Fetcher) scanUnfetchedMetadata() {
 	`
 
 	if err := f.db.Raw(query, f.config.MaxRetries).Scan(&unfetchedPools).Error; err != nil {
-		logger.Error("Failed to scan unfetched pool metadata", "error", err)
+		unifiederrors.Get().DatabaseError("MetadataFetcher", "ScanPoolMetadata", err)
 		return
 	}
 
 	for _, pool := range unfetchedPools {
 		if err := f.QueuePoolMetadata(pool.PoolHash, pool.PmrHash, pool.URL, pool.Hash); err != nil {
-			logger.Debug("Failed to queue pool metadata", "error", err)
+			// Failed to queue pool metadata
 		}
 	}
 
@@ -730,20 +722,17 @@ func (f *Fetcher) scanUnfetchedMetadata() {
 	`
 
 	if err := f.db.Raw(query, f.config.MaxRetries).Scan(&unfetchedAnchors).Error; err != nil {
-		logger.Error("Failed to scan unfetched governance metadata", "error", err)
+		unifiederrors.Get().DatabaseError("MetadataFetcher", "ScanGovernanceMetadata", err)
 		return
 	}
 
 	for _, anchor := range unfetchedAnchors {
 		if err := f.QueueGovernanceMetadata(anchor.AnchorHash, anchor.URL, anchor.Hash); err != nil {
-			logger.Debug("Failed to queue governance metadata", "error", err)
+			// Failed to queue governance metadata
 		}
 	}
 
-	logger.Debug("Periodic metadata scan complete",
-		"unfetched_pools", len(unfetchedPools),
-		"unfetched_anchors", len(unfetchedAnchors),
-	)
+	// Periodic metadata scan complete
 }
 
 // Helper methods for concurrency control
@@ -777,7 +766,7 @@ func (s simpleLogger) Debug(msg string, keysAndValues ...interface{}) {
 }
 
 func (s simpleLogger) Error(msg string, keysAndValues ...interface{}) {
-	log.Printf("[ERROR] %s %v", msg, keysAndValues)
+	unifiederrors.Get().LogError(unifiederrors.ErrorTypeNetwork, "MetadataFetcher", "Error", fmt.Sprintf("%s %v", msg, keysAndValues))
 }
 
 // Package-level logger
@@ -792,17 +781,17 @@ func hashToID(hash []byte) int64 {
 	if len(hash) == 0 {
 		return 0
 	}
-	
+
 	// Use first 8 bytes of hash as a pseudo-ID
 	var id int64
 	for i := 0; i < 8 && i < len(hash); i++ {
 		id = (id << 8) | int64(hash[i])
 	}
-	
+
 	// Ensure positive
 	if id < 0 {
 		id = -id
 	}
-	
+
 	return id
 }

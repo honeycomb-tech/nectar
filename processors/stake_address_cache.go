@@ -35,10 +35,10 @@ func (sac *StakeAddressCache) GetOrCreateStakeAddress(tx *gorm.DB, addr ledger.A
 	if len(stakeBytes) < 28 {
 		return nil, fmt.Errorf("invalid stake address bytes length: %d", len(stakeBytes))
 	}
-	
+
 	// Use last 28 bytes as the stake address hash
 	hashBytes := stakeBytes[len(stakeBytes)-28:]
-	
+
 	return sac.GetOrCreateStakeAddressFromBytesWithTx(tx, hashBytes)
 }
 
@@ -60,14 +60,14 @@ func (sac *StakeAddressCache) GetOrCreateStakeAddressFromBytesWithTx(tx *gorm.DB
 	// Not in cache, check database
 	var stakeAddr models.StakeAddress
 	err := tx.Where("hash_raw = ?", hashBytes).First(&stakeAddr).Error
-	
+
 	if err == gorm.ErrRecordNotFound {
 		// Create new stake address
 		stakeAddr = models.StakeAddress{
 			HashRaw: hashBytes,
 			View:    cacheKey,
 		}
-		
+
 		// Use ON CONFLICT DO NOTHING to handle concurrent inserts
 		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "hash_raw"}},
@@ -75,7 +75,7 @@ func (sac *StakeAddressCache) GetOrCreateStakeAddressFromBytesWithTx(tx *gorm.DB
 		}).Create(&stakeAddr).Error; err != nil {
 			return nil, fmt.Errorf("failed to create stake address: %w", err)
 		}
-		
+
 		// If nothing was created (due to conflict), fetch the existing record
 		if tx.RowsAffected == 0 {
 			if err := tx.Where("hash_raw = ?", hashBytes).First(&stakeAddr).Error; err != nil {
@@ -103,22 +103,22 @@ func (sac *StakeAddressCache) EnsureStakeAddressFromBytesWithTx(tx *gorm.DB, has
 // PreloadCache preloads stake addresses into the cache
 func (sac *StakeAddressCache) PreloadCache() error {
 	var stakeAddresses []models.StakeAddress
-	
+
 	// Load stake addresses in batches
 	batchSize := 10000
 	offset := 0
-	
+
 	for {
 		var batch []models.StakeAddress
 		err := sac.db.Limit(batchSize).Offset(offset).Find(&batch).Error
 		if err != nil {
 			return fmt.Errorf("failed to preload stake addresses: %w", err)
 		}
-		
+
 		if len(batch) == 0 {
 			break
 		}
-		
+
 		// Add to cache
 		sac.mutex.Lock()
 		for _, addr := range batch {
@@ -126,15 +126,15 @@ func (sac *StakeAddressCache) PreloadCache() error {
 			sac.cache[cacheKey] = addr.HashRaw
 		}
 		sac.mutex.Unlock()
-		
+
 		stakeAddresses = append(stakeAddresses, batch...)
 		offset += batchSize
-		
+
 		if len(batch) < batchSize {
 			break
 		}
 	}
-	
+
 	return nil
 }
 

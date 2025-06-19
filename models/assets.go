@@ -167,17 +167,17 @@ func (ReferenceTxIn) TableName() string {
 
 // CollateralTxOut represents collateral outputs
 type CollateralTxOut struct {
-	TxHash            []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	Index             uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	Address           string  `gorm:"type:VARCHAR(1024);not null"`
-	AddressRaw        []byte  `gorm:"type:VARBINARY(1024);not null"`
-	AddressHasScript  bool    `gorm:"not null;default:false"`
-	PaymentCred       []byte  `gorm:"type:VARBINARY(32);index"`
-	StakeAddressHash  []byte  `gorm:"type:VARBINARY(28);index"`
-	Value             uint64  `gorm:"type:BIGINT UNSIGNED;not null"`
-	DataHash          []byte  `gorm:"type:VARBINARY(32)"`
-	MultiAssetsCount  uint32  `gorm:"type:INT UNSIGNED;not null;default:0"`
-	InlineDatumHash   []byte  `gorm:"type:VARBINARY(32);index"`
+	TxHash              []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	Index               uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	Address             string `gorm:"type:VARCHAR(1024);not null"`
+	AddressRaw          []byte `gorm:"type:VARBINARY(1024);not null"`
+	AddressHasScript    bool   `gorm:"not null;default:false"`
+	PaymentCred         []byte `gorm:"type:VARBINARY(32);index"`
+	StakeAddressHash    []byte `gorm:"type:VARBINARY(28);index"`
+	Value               uint64 `gorm:"type:BIGINT UNSIGNED;not null"`
+	DataHash            []byte `gorm:"type:VARBINARY(32)"`
+	MultiAssetsCount    uint32 `gorm:"type:INT UNSIGNED;not null;default:0"`
+	InlineDatumHash     []byte `gorm:"type:VARBINARY(32);index"`
 	ReferenceScriptHash []byte `gorm:"type:VARBINARY(28);index"`
 
 	// Relationships
@@ -221,8 +221,8 @@ func (TxCbor) TableName() string {
 
 // ExtraKeyWitness represents extra key witnesses
 type ExtraKeyWitness struct {
-	Hash   []byte `gorm:"type:VARBINARY(32);primaryKey"` // Composite hash
-	TxHash []byte `gorm:"type:VARBINARY(32);not null;index"`
+	Hash    []byte `gorm:"type:VARBINARY(32);primaryKey"` // Composite hash
+	TxHash  []byte `gorm:"type:VARBINARY(32);not null;index"`
 	KeyHash []byte `gorm:"type:VARBINARY(28);not null"`
 
 	// Relationships
@@ -346,20 +346,20 @@ func (EventInfo) TableName() string {
 }
 
 // Remove all BeforeCreate hooks since we don't need ID management
-func (m *MultiAsset) BeforeCreate(tx *gorm.DB) error { return nil }
-func (m *MaTxOut) BeforeCreate(tx *gorm.DB) error { return nil }
-func (m *MaTxMint) BeforeCreate(tx *gorm.DB) error { return nil }
-func (s *Script) BeforeCreate(tx *gorm.DB) error { return nil }
-func (d *Datum) BeforeCreate(tx *gorm.DB) error { return nil }
-func (r *RedeemerData) BeforeCreate(tx *gorm.DB) error { return nil }
-func (r *Redeemer) BeforeCreate(tx *gorm.DB) error { return nil }
-func (c *CollateralTxIn) BeforeCreate(tx *gorm.DB) error { return nil }
-func (r *ReferenceTxIn) BeforeCreate(tx *gorm.DB) error { return nil }
+func (m *MultiAsset) BeforeCreate(tx *gorm.DB) error      { return nil }
+func (m *MaTxOut) BeforeCreate(tx *gorm.DB) error         { return nil }
+func (m *MaTxMint) BeforeCreate(tx *gorm.DB) error        { return nil }
+func (s *Script) BeforeCreate(tx *gorm.DB) error          { return nil }
+func (d *Datum) BeforeCreate(tx *gorm.DB) error           { return nil }
+func (r *RedeemerData) BeforeCreate(tx *gorm.DB) error    { return nil }
+func (r *Redeemer) BeforeCreate(tx *gorm.DB) error        { return nil }
+func (c *CollateralTxIn) BeforeCreate(tx *gorm.DB) error  { return nil }
+func (r *ReferenceTxIn) BeforeCreate(tx *gorm.DB) error   { return nil }
 func (c *CollateralTxOut) BeforeCreate(tx *gorm.DB) error { return nil }
-func (t *TxMetadata) BeforeCreate(tx *gorm.DB) error { return nil }
-func (t *TxCbor) BeforeCreate(tx *gorm.DB) error { return nil }
+func (t *TxMetadata) BeforeCreate(tx *gorm.DB) error      { return nil }
+func (t *TxCbor) BeforeCreate(tx *gorm.DB) error          { return nil }
 func (e *ExtraKeyWitness) BeforeCreate(tx *gorm.DB) error { return nil }
-func (c *CostModel) BeforeCreate(tx *gorm.DB) error { return nil }
-func (e *EpochParam) BeforeCreate(tx *gorm.DB) error { return nil }
-func (a *AdaPots) BeforeCreate(tx *gorm.DB) error { return nil }
-func (e *EventInfo) BeforeCreate(tx *gorm.DB) error { return nil }
+func (c *CostModel) BeforeCreate(tx *gorm.DB) error       { return nil }
+func (e *EpochParam) BeforeCreate(tx *gorm.DB) error      { return nil }
+func (a *AdaPots) BeforeCreate(tx *gorm.DB) error         { return nil }
+func (e *EventInfo) BeforeCreate(tx *gorm.DB) error       { return nil }

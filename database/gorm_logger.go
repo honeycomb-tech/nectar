@@ -1,4 +1,4 @@
-package errors
+package database
 
 import (
 	"context"
@@ -9,13 +9,14 @@ import (
 
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
+	unifiederrors "nectar/errors"
 )
 
 // UnifiedGormLogger implements GORM's logger interface and forwards to unified error system
 type UnifiedGormLogger struct {
-	SlowThreshold         time.Duration
-	IgnoreRecordNotFound  bool
-	LogLevel              gormlogger.LogLevel
+	SlowThreshold        time.Duration
+	IgnoreRecordNotFound bool
+	LogLevel             gormlogger.LogLevel
 }
 
 // NewGormLogger creates a new GORM logger that uses the unified error system
@@ -23,7 +24,7 @@ func NewGormLogger() gormlogger.Interface {
 	return &UnifiedGormLogger{
 		SlowThreshold:        time.Second,
 		IgnoreRecordNotFound: true,
-		LogLevel:            gormlogger.Warn,
+		LogLevel:             gormlogger.Warn,
 	}
 }
 
@@ -37,21 +38,21 @@ func (l *UnifiedGormLogger) LogMode(level gormlogger.LogLevel) gormlogger.Interf
 // Info logs info level messages
 func (l *UnifiedGormLogger) Info(ctx context.Context, msg string, data ...interface{}) {
 	if l.LogLevel >= gormlogger.Info {
-		Get().LogError(ErrorTypeSystem, "GORM", "Info", fmt.Sprintf(msg, data...))
+		unifiederrors.Get().LogError(unifiederrors.ErrorTypeSystem, "GORM", "Info", fmt.Sprintf(msg, data...))
 	}
 }
 
 // Warn logs warning level messages
 func (l *UnifiedGormLogger) Warn(ctx context.Context, msg string, data ...interface{}) {
 	if l.LogLevel >= gormlogger.Warn {
-		Get().Warning("GORM", "Warning", fmt.Sprintf(msg, data...))
+		unifiederrors.Get().Warning("GORM", "Warning", fmt.Sprintf(msg, data...))
 	}
 }
 
 // Error logs error level messages
 func (l *UnifiedGormLogger) Error(ctx context.Context, msg string, data ...interface{}) {
 	if l.LogLevel >= gormlogger.Error {
-		Get().LogError(ErrorTypeDatabase, "GORM", "Error", fmt.Sprintf(msg, data...))
+		unifiederrors.Get().LogError(unifiederrors.ErrorTypeDatabase, "GORM", "Error", fmt.Sprintf(msg, data...))
 	}
 }
 
@@ -63,7 +64,7 @@ func (l *UnifiedGormLogger) Trace(ctx context.Context, begin time.Time, fc func(
 
 	elapsed := time.Since(begin)
 	sql, _ := fc()
-	
+
 	// Extract operation type from SQL
 	operation := "Query"
 	sqlLower := strings.ToLower(sql)
@@ -94,29 +95,31 @@ func (l *UnifiedGormLogger) Trace(ctx context.Context, begin time.Time, fc func(
 	case err != nil && (!errors.Is(err, gorm.ErrRecordNotFound) || !l.IgnoreRecordNotFound):
 		// Handle different types of database errors
 		errStr := err.Error()
-		
+
 		// Check for specific MySQL/TiDB errors
 		if strings.Contains(errStr, "Error 1452") || strings.Contains(errStr, "foreign key constraint fails") {
 			// Foreign key constraint error
-			Get().ConstraintError(component, operation, err, fmt.Sprintf("SQL: %s", truncateSQL(sql)))
+			unifiederrors.Get().ConstraintError(component, operation, err, fmt.Sprintf("SQL: %s", truncateSQL(sql)))
 		} else if strings.Contains(errStr, "Error 1062") || strings.Contains(errStr, "Duplicate entry") {
-			// Duplicate key error
-			Get().ConstraintError(component, operation, err, fmt.Sprintf("SQL: %s", truncateSQL(sql)))
+			// Duplicate key error - DON'T LOG AT ALL
+			// These are normal during parallel processing when multiple workers
+			// try to insert the same block. Not an error condition.
+			// Skip logging entirely to prevent dashboard pollution
 		} else if strings.Contains(errStr, "Error 1213") || strings.Contains(errStr, "Deadlock found") {
 			// Deadlock error
-			Get().DatabaseError(component, operation, fmt.Errorf("deadlock detected: %w", err))
+			unifiederrors.Get().DatabaseError(component, operation, fmt.Errorf("deadlock detected: %w", err))
 		} else if strings.Contains(errStr, "connection") || strings.Contains(errStr, "Can't connect") {
 			// Connection error
-			Get().NetworkError(component, operation, err)
+			unifiederrors.Get().NetworkError(component, operation, err)
 		} else {
 			// General database error
-			Get().DatabaseError(component, operation, err)
+			unifiederrors.Get().DatabaseError(component, operation, err)
 		}
-		
+
 	case elapsed > l.SlowThreshold && l.SlowThreshold != 0 && l.LogLevel >= gormlogger.Warn:
 		// Slow query
-		Get().SlowQuery(component, operation, elapsed, truncateSQL(sql))
-		
+		unifiederrors.Get().SlowQuery(component, operation, elapsed, truncateSQL(sql))
+
 	case l.LogLevel == gormlogger.Info:
 		// Normal query logging (only in info mode)
 		// Don't log every query to avoid noise
@@ -126,7 +129,7 @@ func (l *UnifiedGormLogger) Trace(ctx context.Context, begin time.Time, fc func(
 // extractTableName attempts to extract the table name from SQL
 func extractTableName(sql string) string {
 	sqlLower := strings.ToLower(sql)
-	
+
 	// Common patterns to extract table name
 	patterns := []struct {
 		prefix string
@@ -141,7 +144,7 @@ func extractTableName(sql string) string {
 		{"table `", "`"},
 		{"table ", " "},
 	}
-	
+
 	for _, p := range patterns {
 		if idx := strings.Index(sqlLower, p.prefix); idx != -1 {
 			start := idx + len(p.prefix)
@@ -150,7 +153,7 @@ func extractTableName(sql string) string {
 			}
 		}
 	}
-	
+
 	return ""
 }
 

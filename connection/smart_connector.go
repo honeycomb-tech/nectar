@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	unifiederrors "nectar/errors"
 
 	ouroboros "github.com/blinklabs-io/gouroboros"
 	"github.com/blinklabs-io/gouroboros/protocol/blockfetch"
@@ -60,7 +61,7 @@ func NewSmartConnector(socketPath string, chainSync chainsync.Config, blockFetch
 			1,          // Preprod
 		},
 		preferredMode: ModeNodeToNode, // Try Node-to-Node first
-		silentMode:    true,            // Production mode - suppress warnings
+		silentMode:    true,           // Production mode - suppress warnings
 	}
 }
 
@@ -173,7 +174,6 @@ func (sc *SmartConnector) tryNodeToClient() (*ConnectionResult, error) {
 	}, nil
 }
 
-
 // StartErrorHandler begins handling connection errors
 func StartErrorHandler(ctx context.Context, errorChan chan error, callback func(string, string)) {
 	go func() {
@@ -186,7 +186,7 @@ func StartErrorHandler(ctx context.Context, errorChan chan error, callback func(
 				if err != nil {
 					// Filter out non-critical warnings
 					if !isNonCriticalError(err) {
-						log.Printf("[ERROR] Connection error: %v", err)
+						unifiederrors.Get().LogError(unifiederrors.ErrorTypeConnection, "SmartConnector", "HandleError", err.Error())
 						if callback != nil {
 							callback("Connection", err.Error())
 						}
@@ -204,21 +204,21 @@ func isNonCriticalError(err error) bool {
 	if err == nil {
 		return true
 	}
-	
+
 	errStr := err.Error()
-	
+
 	// Suppress these warnings in production
 	nonCritical := []string{
 		"version mismatch",
 		"handshake failed",
 		"protocol negotiation",
 	}
-	
+
 	for _, pattern := range nonCritical {
 		if strings.Contains(strings.ToLower(errStr), pattern) {
 			return true
 		}
 	}
-	
+
 	return false
 }

@@ -1,8 +1,8 @@
 package models
 
 import (
-	"time"
 	"gorm.io/gorm"
+	"time"
 )
 
 // Block represents a block in the blockchain with hash as primary key
@@ -61,26 +61,26 @@ func (Tx) TableName() string {
 
 // TxOut represents a transaction output with composite primary key
 type TxOut struct {
-	TxHash            []byte  `gorm:"type:VARBINARY(32);primaryKey;index:idx_tx_outs_lookup,priority:1"`
-	Index             uint32  `gorm:"type:INT UNSIGNED;primaryKey;index:idx_tx_outs_lookup,priority:2"`
+	TxHash []byte `gorm:"type:VARBINARY(32);primaryKey;index:idx_tx_outs_lookup,priority:1"`
+	Index  uint32 `gorm:"type:INT UNSIGNED;primaryKey;index:idx_tx_outs_lookup,priority:2"`
 	// Address is VARCHAR(2048) to handle Byron addresses with full HD wallet derivation paths.
 	// Normal addresses: Shelley ~100 chars, Byron ~104-114 chars
 	// Edge case: Some early Byron addresses with derivation paths can exceed 1000 chars after CBOR+base58 encoding
-	Address           string  `gorm:"type:VARCHAR(2048);not null;index:idx_tx_out_address_value,priority:1,length:40"`
-	AddressRaw        []byte  `gorm:"type:VARBINARY(1024);not null"`
-	AddressHasScript  bool    `gorm:"not null;default:false"`
-	PaymentCred       []byte  `gorm:"type:VARBINARY(32);index"`
-	StakeAddressHash  []byte  `gorm:"type:VARBINARY(28);index"`
-	Value             uint64  `gorm:"type:BIGINT UNSIGNED;not null;index:idx_tx_out_address_value,priority:2"`
-	DataHash          []byte  `gorm:"type:VARBINARY(32)"`
-	InlineDatumHash   []byte  `gorm:"type:VARBINARY(32);index"`
+	Address             string `gorm:"type:VARCHAR(2048);not null;index:idx_tx_out_address_value,priority:1,length:40"`
+	AddressRaw          []byte `gorm:"type:VARBINARY(1024);not null"`
+	AddressHasScript    bool   `gorm:"not null;default:false"`
+	PaymentCred         []byte `gorm:"type:VARBINARY(32);index"`
+	StakeAddressHash    []byte `gorm:"type:VARBINARY(28);index"`
+	Value               uint64 `gorm:"type:BIGINT UNSIGNED;not null;index:idx_tx_out_address_value,priority:2"`
+	DataHash            []byte `gorm:"type:VARBINARY(32)"`
+	InlineDatumHash     []byte `gorm:"type:VARBINARY(32);index"`
 	ReferenceScriptHash []byte `gorm:"type:VARBINARY(28);index"`
 
 	// Relationships
-	Tx           Tx            `gorm:"foreignKey:TxHash;references:Hash"`
-	StakeAddress *StakeAddress `gorm:"foreignKey:StakeAddressHash;references:HashRaw"`
-	InlineDatum  *Datum        `gorm:"foreignKey:InlineDatumHash;references:Hash"`
-	ReferenceScript *Script    `gorm:"foreignKey:ReferenceScriptHash;references:Hash"`
+	Tx              Tx            `gorm:"foreignKey:TxHash;references:Hash"`
+	StakeAddress    *StakeAddress `gorm:"foreignKey:StakeAddressHash;references:HashRaw"`
+	InlineDatum     *Datum        `gorm:"foreignKey:InlineDatumHash;references:Hash"`
+	ReferenceScript *Script       `gorm:"foreignKey:ReferenceScriptHash;references:Hash"`
 }
 
 func (TxOut) TableName() string {
@@ -89,11 +89,11 @@ func (TxOut) TableName() string {
 
 // TxIn represents a transaction input
 type TxIn struct {
-	TxInHash     []byte  `gorm:"type:VARBINARY(32);primaryKey"`
-	TxInIndex    uint32  `gorm:"type:INT UNSIGNED;primaryKey"`
-	TxOutHash    []byte  `gorm:"type:VARBINARY(32);not null;index:idx_tx_ins_spent,priority:1"`
-	TxOutIndex   uint32  `gorm:"type:INT UNSIGNED;not null;index:idx_tx_ins_spent,priority:2"`
-	RedeemerHash []byte  `gorm:"type:VARBINARY(32);index"`
+	TxInHash     []byte `gorm:"type:VARBINARY(32);primaryKey"`
+	TxInIndex    uint32 `gorm:"type:INT UNSIGNED;primaryKey"`
+	TxOutHash    []byte `gorm:"type:VARBINARY(32);not null;index:idx_tx_ins_spent,priority:1"`
+	TxOutIndex   uint32 `gorm:"type:INT UNSIGNED;not null;index:idx_tx_ins_spent,priority:2"`
+	RedeemerHash []byte `gorm:"type:VARBINARY(32);index"`
 
 	// Relationships
 	TxIn     Tx        `gorm:"foreignKey:TxInHash;references:Hash"`
@@ -104,7 +104,6 @@ type TxIn struct {
 func (TxIn) TableName() string {
 	return "tx_ins"
 }
-
 
 // SlotLeader represents a slot leader with hash as primary key
 type SlotLeader struct {
@@ -154,7 +153,6 @@ func (to *TxOut) BeforeCreate(tx *gorm.DB) error {
 func (ti *TxIn) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
-
 
 func (sl *SlotLeader) BeforeCreate(tx *gorm.DB) error {
 	return nil

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	unifiederrors "nectar/errors"
 	"nectar/models"
 	"strings"
 	"sync"
@@ -45,7 +46,7 @@ func (mac *MultiAssetCache) GetOrCreateMultiAsset(policyID []byte, assetName []b
 // GetOrCreateMultiAssetWithTx ensures a multi-asset exists with transaction context
 func (mac *MultiAssetCache) GetOrCreateMultiAssetWithTx(tx *gorm.DB, policyID []byte, assetName []byte) error {
 	cacheKey := fmt.Sprintf("%s:%s", hex.EncodeToString(policyID), hex.EncodeToString(assetName))
-	
+
 	// Check cache first
 	mac.mutex.RLock()
 	if exists := mac.cache[cacheKey]; exists {
@@ -76,8 +77,16 @@ func (mac *MultiAssetCache) GetOrCreateMultiAssetWithTx(tx *gorm.DB, policyID []
 		Fingerprint: common.NewAssetFingerprint(policyID, assetName).String(),
 	}
 
-	if err := tx.Create(&multiAsset).Error; err != nil {
-		return fmt.Errorf("failed to create multi-asset: %w", err)
+	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
+	if err := tx.Exec(
+		"INSERT INTO multi_assets (policy, name, fingerprint) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE policy = policy",
+		multiAsset.Policy, multiAsset.Name, multiAsset.Fingerprint,
+	).Error; err != nil {
+		// If still fails, it might be a race condition - just log and continue
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			return fmt.Errorf("failed to create multi-asset: %w", err)
+		}
+		log.Printf("[DEBUG] Multi-asset already exists (race condition): %s", cacheKey)
 	}
 
 	// Cache existence
@@ -101,7 +110,9 @@ func NewAssetProcessor(db *gorm.DB) *AssetProcessor {
 func (ap *AssetProcessor) ProcessTransactionMints(ctx context.Context, tx *gorm.DB, txHash []byte, transaction interface{}) error {
 	// Try to extract mints using interface assertion
 	switch txWithMint := transaction.(type) {
-	case interface{ AssetMint() *common.MultiAsset[common.MultiAssetTypeMint] }:
+	case interface {
+		AssetMint() *common.MultiAsset[common.MultiAssetTypeMint]
+	}:
 		mint := txWithMint.AssetMint()
 		if mint == nil {
 			return nil
@@ -117,7 +128,7 @@ func (ap *AssetProcessor) ProcessTransactionMints(ctx context.Context, tx *gorm.
 				// Get the amount for this asset
 				amount := mint.Asset(policyID, assetNameBytes)
 				if err := ap.processMintOperation(tx, txHash, policyIDBytes, assetNameBytes, int64(amount)); err != nil {
-					log.Printf("[WARNING] Mint operation error: %v", err)
+					unifiederrors.Get().Warning("AssetProcessor", "MintOperation", fmt.Sprintf("Mint operation error: %v", err))
 					continue
 				}
 			}
@@ -145,8 +156,14 @@ func (ap *AssetProcessor) processMintOperation(tx *gorm.DB, txHash []byte, polic
 		Quantity: amount,
 	}
 
-	if err := tx.Create(maTxMint).Error; err != nil {
-		return fmt.Errorf("failed to create mint record: %w", err)
+	// Use raw SQL for ON DUPLICATE KEY UPDATE
+	if err := tx.Exec(
+		"INSERT INTO ma_tx_mint (tx_hash, policy, name, quantity) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE quantity = quantity",
+		maTxMint.TxHash, maTxMint.Policy, maTxMint.Name, maTxMint.Quantity,
+	).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			return fmt.Errorf("failed to create mint record: %w", err)
+		}
 	}
 
 	log.Printf("[OK] Processed mint: policy=%s, asset=%s, amount=%d",
@@ -168,7 +185,7 @@ func (ap *AssetProcessor) ProcessOutputAssets(tx *gorm.DB, txHash []byte, output
 			// Get the amount for this asset
 			amount := assets.Asset(policyID, assetNameBytes)
 			if err := ap.processOutputAsset(tx, txHash, outputIndex, policyIDBytes, assetNameBytes, uint64(amount)); err != nil {
-				log.Printf("[WARNING] Output asset error: %v", err)
+				unifiederrors.Get().Warning("AssetProcessor", "OutputAsset", fmt.Sprintf("Output asset error: %v", err))
 				continue
 			}
 		}
@@ -192,8 +209,14 @@ func (ap *AssetProcessor) processOutputAsset(tx *gorm.DB, txHash []byte, outputI
 		Quantity: quantity,
 	}
 
-	if err := tx.Create(maTxOut).Error; err != nil {
-		return fmt.Errorf("failed to create output asset record: %w", err)
+	// Use raw SQL for ON DUPLICATE KEY UPDATE
+	if err := tx.Exec(
+		"INSERT INTO ma_tx_out (tx_hash, tx_index, policy, name, quantity) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE quantity = quantity",
+		maTxOut.TxHash, maTxOut.TxIndex, maTxOut.Policy, maTxOut.Name, maTxOut.Quantity,
+	).Error; err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			return fmt.Errorf("failed to create output asset record: %w", err)
+		}
 	}
 
 	return nil
@@ -218,7 +241,7 @@ func (ap *AssetProcessor) ProcessTransactionAssetsBatch(ctx context.Context, tx 
 	assetsProcessed := 0
 	for i, output := range outputs {
 		if err := ap.ProcessOutputAssetsBatch(ctx, tx, txHash, i, output); err != nil {
-			log.Printf("[WARNING] Failed to process output %d assets: %v", i, err)
+			unifiederrors.Get().Warning("AssetProcessor", "ProcessOutputAssets", fmt.Sprintf("Failed to process output %d assets: %v", i, err))
 			continue // Continue processing other outputs instead of failing entire transaction
 		}
 		assetsProcessed++
@@ -235,7 +258,9 @@ func (ap *AssetProcessor) ProcessTransactionAssetsBatch(ctx context.Context, tx 
 func (ap *AssetProcessor) ProcessOutputAssetsBatch(ctx context.Context, tx *gorm.DB, txHash []byte, outputIndex int, output interface{}) error {
 	// Try to extract assets using interface assertion for Mary+ outputs
 	switch outputWithAssets := output.(type) {
-	case interface{ Assets() *common.MultiAsset[common.MultiAssetTypeOutput] }:
+	case interface {
+		Assets() *common.MultiAsset[common.MultiAssetTypeOutput]
+	}:
 		assets := outputWithAssets.Assets()
 		if assets == nil {
 			return nil
@@ -252,7 +277,7 @@ func (ap *AssetProcessor) ProcessOutputAssetsBatch(ctx context.Context, tx *gorm
 				// Get the amount for this asset
 				amount := assets.Asset(policyID, assetNameBytes)
 				if err := ap.processOutputAsset(tx, txHash, uint32(outputIndex), policyIDBytes, assetNameBytes, uint64(amount)); err != nil {
-					log.Printf("[WARNING] Output asset error for tx %s, output=%d: %v", hex.EncodeToString(txHash)[:16], outputIndex, err)
+					unifiederrors.Get().Warning("AssetProcessor", "OutputAssetError", fmt.Sprintf("Output asset error for tx %s, output=%d: %v", hex.EncodeToString(txHash)[:16], outputIndex, err))
 					continue
 				}
 				assetCount++
@@ -262,7 +287,7 @@ func (ap *AssetProcessor) ProcessOutputAssetsBatch(ctx context.Context, tx *gorm
 		if assetCount > 0 {
 			log.Printf(" Processed %d assets in output %d (tx %s) using batch optimization", assetCount, outputIndex, hex.EncodeToString(txHash)[:16])
 		}
-		
+
 		return nil
 
 	default:
@@ -283,10 +308,12 @@ func (ap *AssetProcessor) ProcessNativeAssets(ctx context.Context, tx *gorm.DB, 
 		// Get assets from output
 		var assets interface{}
 		switch outputWithAssets := output.(type) {
-		case interface{ Assets() *common.MultiAsset[common.MultiAssetTypeOutput] }:
+		case interface {
+			Assets() *common.MultiAsset[common.MultiAssetTypeOutput]
+		}:
 			assets = outputWithAssets.Assets()
 		}
-		
+
 		if assets != nil {
 			if assetMulti, ok := assets.(*common.MultiAsset[common.MultiAssetTypeOutput]); ok {
 				if err := ap.ProcessOutputAssets(tx, txHash, uint32(i), assetMulti); err != nil {
@@ -329,7 +356,7 @@ func (ap *AssetProcessor) ProcessCollateralOutputAssets(tx *gorm.DB, txHash []by
 			// Get the amount for this asset
 			amount := assets.Asset(policyID, assetNameBytes)
 			if err := ap.processCollateralOutputAsset(tx, txHash, outputIndex, policyIDBytes, assetNameBytes, uint64(amount)); err != nil {
-				log.Printf("[WARNING] Collateral output asset error: %v", err)
+				unifiederrors.Get().Warning("AssetProcessor", "CollateralOutputAsset", fmt.Sprintf("Collateral output asset error: %v", err))
 				continue
 			}
 		}
@@ -375,23 +402,23 @@ func (ap *AssetProcessor) ProcessMint(tx *gorm.DB, txHash []byte, mint map[strin
 		// Asset ID format is "policyID.assetName" where both are hex strings
 		parts := strings.Split(assetID, ".")
 		if len(parts) != 2 {
-			log.Printf("[WARNING] Invalid asset ID format: %s", assetID)
+			unifiederrors.Get().Warning("AssetProcessor", "InvalidAssetIDFormat", fmt.Sprintf("Invalid asset ID format: %s", assetID))
 			continue
 		}
-		
+
 		// Decode hex strings
 		policyID, err := hex.DecodeString(parts[0])
 		if err != nil {
-			log.Printf("[WARNING] Failed to decode policy ID %s: %v", parts[0], err)
+			unifiederrors.Get().Warning("AssetProcessor", "DecodePolicyID", fmt.Sprintf("Failed to decode policy ID %s: %v", parts[0], err))
 			continue
 		}
-		
+
 		assetName, err := hex.DecodeString(parts[1])
 		if err != nil {
 			log.Printf("[WARNING] Failed to decode asset name %s: %v", parts[1], err)
 			continue
 		}
-		
+
 		// Process the mint operation (positive for mint, negative for burn)
 		if err := ap.processMintOperation(tx, txHash, policyID, assetName, amount); err != nil {
 			log.Printf("[WARNING] Failed to process mint for asset %s: %v", assetID, err)

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nectar Dashboard</title>
+    
+    <!-- HTMX for dynamic updates -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org/dist/ext/ws.js"></script>
+    
+    <!-- Alpine.js for reactive components -->
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Chart.js for performance graphs -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    
+    <style>
+        /* Custom styles */
+        .badge { @apply inline-flex items-center px-2 py-1 text-xs font-medium rounded; }
+        .badge-info { @apply bg-blue-100 text-blue-800; }
+        .badge-success { @apply bg-green-100 text-green-800; }
+        .badge-warning { @apply bg-yellow-100 text-yellow-800; }
+        .badge-error { @apply bg-red-100 text-red-800; }
+        .badge-secondary { @apply bg-gray-100 text-gray-800; }
+        
+        .metric-card { @apply bg-white rounded-lg shadow p-4; }
+        .metric-value { @apply text-2xl font-bold text-gray-900; }
+        .metric-label { @apply text-sm text-gray-500; }
+        
+        /* Animations */
+        @keyframes pulse-soft {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+    </style>
+</head>
+<body class="bg-gray-50" hx-ext="ws" ws-connect="/ws">
+    <div id="app" x-data="dashboardApp()">
+        <!-- Header/Status Bar -->
+        <div id="status-bar" class="bg-gray-900 text-white shadow-lg" 
+             hx-get="/htmx/status" 
+             hx-trigger="load, every 2s">
+            <div class="container mx-auto px-4 py-3">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-4">
+                        <h1 class="text-xl font-bold">NECTAR INDEXER</h1>
+                        <span class="text-sm opacity-75">Cardano Blockchain Indexer</span>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <span class="flex items-center" x-show="connected">
+                            <span class="w-2 h-2 bg-green-400 rounded-full mr-2"></span>
+                            <span class="text-sm">Connected</span>
+                        </span>
+                        <span class="flex items-center" x-show="!connected">
+                            <span class="w-2 h-2 bg-red-400 rounded-full mr-2"></span>
+                            <span class="text-sm">Disconnected</span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="container mx-auto px-4 py-6">
+            <!-- Era Progress Section -->
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <h2 class="text-lg font-semibold mb-4 text-gray-800">Era Progress</h2>
+                <div id="era-container" class="space-y-3">
+                    <!-- Era progress bars will be loaded here -->
+                    <div x-for="era in ['Byron', 'Shelley', 'Allegra', 'Mary', 'Alonzo', 'Babbage', 'Conway']" :key="era">
+                        <div :id="'era-' + era" 
+                             :hx-get="'/htmx/era/' + era" 
+                             hx-trigger="load, every 2s"
+                             class="era-progress">
+                            <div class="animate-pulse">
+                                <div class="h-8 bg-gray-200 rounded"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance & Metrics Grid -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+                <!-- Blocks/sec Metric -->
+                <div class="metric-card">
+                    <div class="metric-label">Blocks/sec</div>
+                    <div id="blocks-per-sec" class="metric-value">--</div>
+                </div>
+                
+                <!-- Total Blocks Metric -->
+                <div class="metric-card">
+                    <div class="metric-label">Total Blocks</div>
+                    <div id="total-blocks" class="metric-value">--</div>
+                </div>
+                
+                <!-- Memory Usage Metric -->
+                <div class="metric-card">
+                    <div class="metric-label">Memory</div>
+                    <div id="memory-usage" class="metric-value">--</div>
+                </div>
+                
+                <!-- CPU Usage Metric -->
+                <div class="metric-card">
+                    <div class="metric-label">CPU</div>
+                    <div id="cpu-usage" class="metric-value">--</div>
+                </div>
+            </div>
+
+            <!-- Charts and Activity Row -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                <!-- Performance Chart -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-lg font-semibold mb-4 text-gray-800">Performance History</h2>
+                    <div class="relative h-64">
+                        <canvas id="performance-chart"></canvas>
+                    </div>
+                    <div id="performance-details" 
+                         hx-get="/htmx/performance" 
+                         hx-trigger="load, every 1s"
+                         hx-swap="innerHTML"
+                         class="mt-4 text-sm text-gray-600">
+                        <div class="animate-pulse">
+                            <div class="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+                            <div class="h-4 bg-gray-200 rounded w-1/2"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity Feed -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-lg font-semibold mb-4 text-gray-800">Activity Feed</h2>
+                    <div id="activities" 
+                         hx-get="/htmx/activities" 
+                         hx-trigger="load, every 2s"
+                         hx-swap="innerHTML"
+                         class="space-y-2 max-h-80 overflow-y-auto">
+                        <div class="animate-pulse">
+                            <div class="h-4 bg-gray-200 rounded w-full mb-2"></div>
+                            <div class="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+                            <div class="h-4 bg-gray-200 rounded w-5/6"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error Monitor -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-lg font-semibold mb-4 text-gray-800">Error Monitor</h2>
+                <div id="errors" 
+                     hx-get="/htmx/errors" 
+                     hx-trigger="load, every 5s"
+                     hx-swap="innerHTML">
+                    <div class="animate-pulse">
+                        <div class="h-6 bg-gray-200 rounded w-1/4 mb-4"></div>
+                        <div class="h-4 bg-gray-200 rounded w-full mb-2"></div>
+                        <div class="h-4 bg-gray-200 rounded w-3/4"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="container mx-auto px-4 py-4 text-center text-sm text-gray-500">
+            <p>Nectar Indexer &copy; 2024 | 
+               <a href="/health" class="text-blue-500 hover:text-blue-700">Health Check</a> |
+               <span x-text="'Last Update: ' + lastUpdate"></span>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // Alpine.js dashboard app
+        function dashboardApp() {
+            return {
+                connected: false,
+                lastUpdate: 'Never',
+                chart: null,
+                chartData: {
+                    labels: [],
+                    values: []
+                },
+                
+                init() {
+                    // Initialize performance chart
+                    this.initChart();
+                    
+                    // WebSocket connection handling
+                    document.body.addEventListener('htmx:wsOpen', () => {
+                        this.connected = true;
+                        console.log('WebSocket connected');
+                    });
+                    
+                    document.body.addEventListener('htmx:wsClose', () => {
+                        this.connected = false;
+                        console.log('WebSocket disconnected');
+                    });
+                    
+                    // Handle WebSocket messages
+                    document.body.addEventListener('htmx:wsMessage', (e) => {
+                        const data = JSON.parse(e.detail.message);
+                        this.handleWebSocketMessage(data);
+                    });
+                    
+                    // Update last update time
+                    setInterval(() => {
+                        this.lastUpdate = new Date().toLocaleTimeString();
+                    }, 1000);
+                },
+                
+                initChart() {
+                    const ctx = document.getElementById('performance-chart').getContext('2d');
+                    this.chart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: this.chartData.labels,
+                            datasets: [{
+                                label: 'Blocks/sec',
+                                data: this.chartData.values,
+                                borderColor: 'rgb(59, 130, 246)',
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                tension: 0.4
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: {
+                                    beginAtZero: true
+                                },
+                                x: {
+                                    display: false
+                                }
+                            },
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            }
+                        }
+                    });
+                },
+                
+                handleWebSocketMessage(data) {
+                    console.log('WebSocket message:', data);
+                    
+                    switch(data.type) {
+                        case 'status':
+                            htmx.trigger('#status-bar', 'update');
+                            break;
+                        case 'performance':
+                            this.updatePerformanceChart(data.data);
+                            htmx.trigger('#performance-details', 'update');
+                            this.updateMetrics(data.data);
+                            break;
+                        case 'activity':
+                            htmx.trigger('#activities', 'update');
+                            break;
+                        case 'error':
+                            htmx.trigger('#errors', 'update');
+                            break;
+                        case 'era':
+                            if (data.data && data.data.name) {
+                                htmx.trigger('#era-' + data.data.name, 'update');
+                            }
+                            break;
+                        case 'full':
+                            // Full dashboard update
+                            htmx.trigger('body', 'update');
+                            break;
+                    }
+                },
+                
+                updatePerformanceChart(perfData) {
+                    if (!perfData || !perfData.blocksHistory) return;
+                    
+                    // Update chart data
+                    this.chartData.values = perfData.blocksHistory;
+                    this.chartData.labels = perfData.blocksHistory.map((_, i) => i.toString());
+                    
+                    // Update chart
+                    if (this.chart) {
+                        this.chart.data.labels = this.chartData.labels;
+                        this.chart.data.datasets[0].data = this.chartData.values;
+                        this.chart.update('none'); // No animation for smooth updates
+                    }
+                },
+                
+                updateMetrics(perfData) {
+                    if (!perfData) return;
+                    
+                    // Update metric displays
+                    if (perfData.blocksPerSec !== undefined) {
+                        document.getElementById('blocks-per-sec').textContent = perfData.blocksPerSec.toFixed(1);
+                    }
+                    if (perfData.totalBlocks !== undefined) {
+                        document.getElementById('total-blocks').textContent = this.formatNumber(perfData.totalBlocks);
+                    }
+                    if (perfData.memoryUsage) {
+                        document.getElementById('memory-usage').textContent = perfData.memoryUsage;
+                    }
+                    if (perfData.cpuUsage) {
+                        document.getElementById('cpu-usage').textContent = perfData.cpuUsage;
+                    }
+                },
+                
+                formatNumber(num) {
+                    if (num < 1000) return num.toString();
+                    if (num < 1000000) return (num / 1000).toFixed(1) + 'K';
+                    if (num < 1000000000) return (num / 1000000).toFixed(1) + 'M';
+                    return (num / 1000000000).toFixed(1) + 'B';
+                }
+            }
+        }
+    </script>
+</body>
+</html>

@@ -21,6 +21,11 @@ services:
       # Monitoring
       - METRICS_ENABLED=${METRICS_ENABLED:-true}
       - METRICS_PORT=${METRICS_PORT:-9090}
+      
+      # Dashboard Configuration
+      - DASHBOARD_TYPE=${DASHBOARD_TYPE:-both}
+      - WEB_PORT=${WEB_PORT:-8080}
+      - DETAILED_LOG=${DETAILED_LOG:-false}
     volumes:
       # Mount Cardano node socket
       - ${CARDANO_NODE_SOCKET:-/opt/cardano/cnode/sockets/node.socket}:/node/socket/node.socket

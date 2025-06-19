@@ -64,16 +64,16 @@ func (c ErrorCategory) String() string {
 
 // CollectedError represents a single error occurrence
 type CollectedError struct {
-	Timestamp   time.Time
-	Severity    ErrorSeverity
-	Category    ErrorCategory
-	Component   string
-	Operation   string
-	Message     string
-	Context     string
-	Count       int64
-	LastSeen    time.Time
-	FirstSeen   time.Time
+	Timestamp time.Time
+	Severity  ErrorSeverity
+	Category  ErrorCategory
+	Component string
+	Operation string
+	Message   string
+	Context   string
+	Count     int64
+	LastSeen  time.Time
+	FirstSeen time.Time
 }
 
 // ErrorCollector collects and manages errors during processing
@@ -88,7 +88,7 @@ type ErrorCollector struct {
 
 var (
 	globalErrorCollector *ErrorCollector
-	once                sync.Once
+	once                 sync.Once
 )
 
 // GetGlobalErrorCollector returns the singleton error collector
@@ -108,8 +108,8 @@ func NewErrorCollector(maxErrors int, flushPeriod time.Duration) *ErrorCollector
 		flushPeriod: flushPeriod,
 	}
 
-	// Open or create error log file
-	logFile, err := os.OpenFile("errors.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// Open or create error log file in append mode
+	logFile, err := os.OpenFile("errors.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Printf("Failed to open error log file: %v", err)
 	} else {
@@ -142,21 +142,21 @@ func (ec *ErrorCollector) CollectError(
 	context string,
 ) *CollectedError {
 	// Create error signature for deduplication
-	signature := fmt.Sprintf("%s:%s:%s:%s:%s", 
+	signature := fmt.Sprintf("%s:%s:%s:%s:%s",
 		severity.String(), category.String(), component, operation, message)
-	
+
 	ec.mutex.Lock()
 	defer ec.mutex.Unlock()
-	
+
 	now := time.Now()
-	
+
 	// Check if this error already exists
 	if existing, exists := ec.errors[signature]; exists {
 		existing.Count++
 		existing.LastSeen = now
 		return existing
 	}
-	
+
 	// Create new error entry
 	err := &CollectedError{
 		Timestamp: now,
@@ -170,7 +170,7 @@ func (ec *ErrorCollector) CollectError(
 		FirstSeen: now,
 		LastSeen:  now,
 	}
-	
+
 	// Check if we've reached max errors
 	if len(ec.errors) >= ec.maxErrors {
 		// Remove oldest error
@@ -184,14 +184,14 @@ func (ec *ErrorCollector) CollectError(
 		}
 		delete(ec.errors, oldestKey)
 	}
-	
+
 	ec.errors[signature] = err
-	
+
 	// Check if we need to flush
 	if time.Since(ec.lastFlush) > ec.flushPeriod {
 		go ec.Flush()
 	}
-	
+
 	return err
 }
 
@@ -227,12 +227,12 @@ func (ec *ErrorCollector) NetworkError(component, operation, message, context st
 func (ec *ErrorCollector) GetErrors() []CollectedError {
 	ec.mutex.RLock()
 	defer ec.mutex.RUnlock()
-	
+
 	errors := make([]CollectedError, 0, len(ec.errors))
 	for _, err := range ec.errors {
 		errors = append(errors, *err)
 	}
-	
+
 	return errors
 }
 
@@ -247,12 +247,12 @@ func (ec *ErrorCollector) GetErrorCount() int {
 func (ec *ErrorCollector) GetTotalErrorCount() int64 {
 	ec.mutex.RLock()
 	defer ec.mutex.RUnlock()
-	
+
 	var total int64
 	for _, err := range ec.errors {
 		total += err.Count
 	}
-	
+
 	return total
 }
 
@@ -260,26 +260,24 @@ func (ec *ErrorCollector) GetTotalErrorCount() int64 {
 func (ec *ErrorCollector) Flush() error {
 	ec.mutex.Lock()
 	defer ec.mutex.Unlock()
-	
+
 	if ec.logFile == nil {
 		return nil
 	}
-	
-	// Clear file and write header
-	ec.logFile.Truncate(0)
-	ec.logFile.Seek(0, 0)
-	
-	fmt.Fprintf(ec.logFile, "NECTAR INDEXER ERROR LOG\n")
-	fmt.Fprintf(ec.logFile, "========================\n")
-	fmt.Fprintf(ec.logFile, "Generated: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(ec.logFile, "Total Errors: %d\n\n", len(ec.errors))
-	
+
+	// Don't truncate - append to existing log
+	// This preserves error history for dashboard analysis
+
+	// Write section header with timestamp
+	fmt.Fprintf(ec.logFile, "\n=== ERROR LOG UPDATE: %s ===\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(ec.logFile, "Active Errors: %d\n\n", len(ec.errors))
+
 	// Group errors by severity
 	errorsBySeverity := make(map[ErrorSeverity][]*CollectedError)
 	for _, err := range ec.errors {
 		errorsBySeverity[err.Severity] = append(errorsBySeverity[err.Severity], err)
 	}
-	
+
 	// Write errors sorted by severity
 	errorNum := 1
 	for _, severity := range []ErrorSeverity{SeverityCritical, SeverityError, SeverityWarning, SeverityInfo} {
@@ -298,10 +296,10 @@ func (ec *ErrorCollector) Flush() error {
 			errorNum++
 		}
 	}
-	
-	fmt.Fprintf(ec.logFile, "END OF ERROR LOG\n")
+
+	fmt.Fprintf(ec.logFile, "=== END OF UPDATE ===\n\n")
 	ec.logFile.Sync()
-	
+
 	ec.lastFlush = time.Now()
 	return nil
 }
@@ -326,16 +324,16 @@ func (ec *ErrorCollector) Close() error {
 func (ec *ErrorCollector) GetRecentErrors(minutes int) []CollectedError {
 	ec.mutex.RLock()
 	defer ec.mutex.RUnlock()
-	
+
 	cutoff := time.Now().Add(-time.Duration(minutes) * time.Minute)
 	recent := []CollectedError{}
-	
+
 	for _, err := range ec.errors {
 		if err.LastSeen.After(cutoff) {
 			recent = append(recent, *err)
 		}
 	}
-	
+
 	return recent
 }
 
@@ -343,14 +341,14 @@ func (ec *ErrorCollector) GetRecentErrors(minutes int) []CollectedError {
 func (ec *ErrorCollector) GetErrorsByCategory(category ErrorCategory) []CollectedError {
 	ec.mutex.RLock()
 	defer ec.mutex.RUnlock()
-	
+
 	errors := []CollectedError{}
 	for _, err := range ec.errors {
 		if err.Category == category {
 			errors = append(errors, *err)
 		}
 	}
-	
+
 	return errors
 }
 
@@ -358,13 +356,13 @@ func (ec *ErrorCollector) GetErrorsByCategory(category ErrorCategory) []Collecte
 func (ec *ErrorCollector) GetErrorsBySeverity(severity ErrorSeverity) []CollectedError {
 	ec.mutex.RLock()
 	defer ec.mutex.RUnlock()
-	
+
 	errors := []CollectedError{}
 	for _, err := range ec.errors {
 		if err.Severity == severity {
 			errors = append(errors, *err)
 		}
 	}
-	
+
 	return errors
 }
