@@ -28,20 +28,55 @@ cd Nectar
 go build -o nectar
 ```
 
-2. Configure environment:
+2. Initialize configuration:
 ```bash
-cp .env.example .env
-# Edit .env with your database credentials
+# Interactive setup (recommended)
+./nectar init
+
+# Or non-interactive with defaults
+./nectar init --no-interactive
 ```
 
-3. Run:
+3. Edit configuration:
 ```bash
-./scripts/start-nectar.sh
+# Edit nectar.toml with your settings
+vim nectar.toml
+```
+
+4. Run:
+```bash
+./start-nectar.sh
+# Or from anywhere: /path/to/Nectar/scripts/start-nectar.sh
 ```
 
 ## Configuration
 
-### Environment Variables (.env)
+Nectar uses a TOML configuration file (`nectar.toml`). You can also use environment variables or `.env` file for backward compatibility.
+
+### Configuration File (nectar.toml)
+
+```toml
+[database]
+dsn = "root:password@tcp(localhost:4000)/nectar?charset=utf8mb4&parseTime=True"
+connection_pool = 8
+
+[cardano]
+node_socket = "/opt/cardano/cnode/sockets/node.socket"
+network_magic = 764824073  # Mainnet
+
+[dashboard]
+enabled = true
+type = "both"  # Options: terminal, web, both, none
+web_port = 8080
+
+[performance]
+worker_count = 8
+bulk_mode_enabled = true
+```
+
+### Environment Variables (Alternative)
+
+For backward compatibility, you can still use `.env` file:
 
 ```bash
 # Database
@@ -52,7 +87,7 @@ CARDANO_NODE_SOCKET=/path/to/node.socket
 CARDANO_NETWORK_MAGIC=764824073  # Mainnet
 
 # Dashboard
-DASHBOARD_TYPE=both  # Options: terminal, web, both, none
+DASHBOARD_TYPE=both
 WEB_PORT=8080
 
 # Performance
@@ -68,6 +103,19 @@ BULK_MODE_ENABLED=true
   - Activity feed
   - Error monitoring
   - Performance metrics
+
+## Migrating from .env to TOML
+
+If you have an existing `.env` file:
+
+```bash
+# Automatically migrate your .env settings to nectar.toml
+./nectar migrate-env
+
+# Or manually create config
+./nectar init
+# Then copy your settings from .env to nectar.toml
+```
 
 ## Testing
 
@@ -107,10 +155,12 @@ docker-compose up -d
 
 ## Troubleshooting
 
-1. **Dashboard not loading**: Check `DASHBOARD_TYPE` in .env
+1. **Dashboard not loading**: Check `dashboard.type` in nectar.toml (or `DASHBOARD_TYPE` in .env)
 2. **Connection refused**: Verify port 8080 is not in use
-3. **Database errors**: Check TiDB connection and credentials
+3. **Database errors**: Check TiDB connection and credentials in nectar.toml
 4. **Node connection**: Verify socket path and permissions
+5. **Config not found**: Run `./nectar init` to create nectar.toml
+6. **Migration from .env**: Run `./nectar migrate-env` to convert .env to nectar.toml
 
 ## Development
 
