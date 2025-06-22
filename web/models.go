@@ -41,6 +41,39 @@ type DashboardData struct {
 	RecentErrors      []ErrorEntry  `json:"recentErrors"`
 }
 
+// DashboardSnapshot represents a snapshot of dashboard data without mutex
+type DashboardSnapshot struct {
+	// Status
+	Status      string    `json:"status"`
+	LastUpdate  time.Time `json:"lastUpdate"`
+	StartTime   time.Time `json:"startTime"`
+
+	// Era Progress
+	EraProgress map[string]float64 `json:"eraProgress"`
+	CurrentEra  string             `json:"currentEra"`
+
+	// Performance
+	CurrentSlot      uint64    `json:"currentSlot"`
+	TipSlot          uint64    `json:"tipSlot"`
+	BlocksPerSec     float64   `json:"blocksPerSec"`
+	PeakBlocksPerSec float64   `json:"peakBlocksPerSec"`
+	TotalBlocks      int64     `json:"totalBlocks"`
+	MemoryUsage      string    `json:"memoryUsage"`
+	CPUUsage         string    `json:"cpuUsage"`
+	SyncPercentage   float64   `json:"syncPercentage"`
+
+	// Performance History (for charts)
+	PerformanceHistory []PerformancePoint `json:"performanceHistory"`
+
+	// Activities
+	Activities []Activity `json:"activities"`
+
+	// Errors
+	TotalErrors       int64         `json:"totalErrors"`
+	ErrorsByType      map[string]int64 `json:"errorsByType"`
+	RecentErrors      []ErrorEntry  `json:"recentErrors"`
+}
+
 // PerformancePoint represents a point in the performance chart
 type PerformancePoint struct {
 	Timestamp    time.Time `json:"timestamp"`
@@ -196,12 +229,33 @@ func (d *DashboardData) AddError(errorType, component, message string) {
 	d.LastUpdate = time.Now()
 }
 
-func (d *DashboardData) GetSnapshot() DashboardData {
+func (d *DashboardData) GetSnapshot() DashboardSnapshot {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	
-	// Create a copy of the data
-	snapshot := *d
+	// Create a snapshot without the mutex
+	snapshot := DashboardSnapshot{
+		// Status fields
+		Status:     d.Status,
+		LastUpdate: d.LastUpdate,
+		StartTime:  d.StartTime,
+		
+		// Era Progress
+		CurrentEra: d.CurrentEra,
+		
+		// Performance fields
+		CurrentSlot:      d.CurrentSlot,
+		TipSlot:          d.TipSlot,
+		BlocksPerSec:     d.BlocksPerSec,
+		PeakBlocksPerSec: d.PeakBlocksPerSec,
+		TotalBlocks:      d.TotalBlocks,
+		MemoryUsage:      d.MemoryUsage,
+		CPUUsage:         d.CPUUsage,
+		SyncPercentage:   d.SyncPercentage,
+		
+		// Error fields
+		TotalErrors: d.TotalErrors,
+	}
 	
 	// Deep copy maps and slices
 	snapshot.EraProgress = make(map[string]float64)

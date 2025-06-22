@@ -63,11 +63,12 @@ func (Tx) TableName() string {
 type TxOut struct {
 	TxHash []byte `gorm:"type:VARBINARY(32);primaryKey;index:idx_tx_outs_lookup,priority:1"`
 	Index  uint32 `gorm:"type:INT UNSIGNED;primaryKey;index:idx_tx_outs_lookup,priority:2"`
-	// Address is VARCHAR(2048) to handle Byron addresses with full HD wallet derivation paths.
+	// Address is TEXT to handle Byron addresses with full HD wallet derivation paths.
 	// Normal addresses: Shelley ~100 chars, Byron ~104-114 chars
-	// Edge case: Some early Byron addresses with derivation paths can exceed 1000 chars after CBOR+base58 encoding
-	Address             string `gorm:"type:VARCHAR(2048);not null;index:idx_tx_out_address_value,priority:1,length:40"`
-	AddressRaw          []byte `gorm:"type:VARBINARY(1024);not null"`
+	// Edge case: Some early Byron addresses with derivation paths can exceed 26,000 chars after CBOR+base58 encoding
+	// The block processor will use hash-based representations for addresses exceeding database limits
+	Address             string `gorm:"type:TEXT;not null;index:idx_tx_out_address_value,priority:1,length:40"`
+	AddressRaw          []byte `gorm:"type:VARBINARY(2048);not null"`
 	AddressHasScript    bool   `gorm:"not null;default:false"`
 	PaymentCred         []byte `gorm:"type:VARBINARY(32);index"`
 	StakeAddressHash    []byte `gorm:"type:VARBINARY(28);index"`

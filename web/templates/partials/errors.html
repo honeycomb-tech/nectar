@@ -1,12 +1,14 @@
-<p>Total Errors: <span class="font-mono">{{.TotalErrors}}</span></p>
-<div class="mt-2 space-y-1">
+{{if .RecentErrors}}
 {{range .RecentErrors}}
-    <div class="text-sm text-red-300">
-        <span class="text-gray-500">{{.Timestamp.Format "15:04:05"}}</span>
-        <span class="text-red-400">[{{.Type}}]</span>
-        {{.Component}}: {{.Message}}
-    </div>
-{{else}}
-    <div class="text-gray-400 text-sm">No errors reported</div>
-{{end}}
+<div class="error-entry">
+    <span class="timestamp">{{.Timestamp.Format "15:04:05"}}</span>
+    <span style="color: #ff6b6b;">[{{.Type | upper}}]</span>
+    <span style="color: #888;">{{.Component}}</span>
+    <span>{{.Message}}</span>
 </div>
+{{end}}
+{{else}}
+<div class="text-center py-8 text-sm status-ok">
+    [OK] All systems operational - No errors detected
+</div>
+{{end}}

@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 	unifiederrors "nectar/errors"
@@ -231,14 +232,25 @@ func (f *Fetcher) worker(id int) {
 			f.setProcessing(req.URL, false)
 
 			if err != nil {
-				// Log to unified error system
-				unifiederrors.Get().LogError(
-					unifiederrors.ErrorTypeNetwork,
-					"MetadataFetcher",
-					"Error",
-					fmt.Sprintf("Failed to fetch %s metadata from %s: %v", req.Type, req.URL, err),
-					fmt.Sprintf("retry_count=%d", req.RetryCount),
-				)
+				// Only log metadata fetch errors in debug mode to reduce noise
+				// These are expected for old/expired pool metadata URLs
+				if req.Type == "pool" && (strings.Contains(err.Error(), "404") || 
+					strings.Contains(err.Error(), "no such host") || 
+					strings.Contains(err.Error(), "hash mismatch")) {
+					// Common expected errors - don't log unless in debug mode
+					if f.config.ValidateJSON { // Using ValidateJSON as a proxy for debug mode
+						log.Printf("[DEBUG] Pool metadata fetch failed (expected): %s - %v", req.URL, err)
+					}
+				} else {
+					// Log other errors to unified error system
+					unifiederrors.Get().LogError(
+						unifiederrors.ErrorTypeNetwork,
+						"MetadataFetcher",
+						"Error",
+						fmt.Sprintf("Failed to fetch %s metadata from %s: %v", req.Type, req.URL, err),
+						fmt.Sprintf("retry_count=%d", req.RetryCount),
+					)
+				}
 
 				// Retry logic
 				if req.RetryCount < f.config.MaxRetries {

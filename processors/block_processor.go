@@ -2,6 +2,7 @@ package processors
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"log"
@@ -38,6 +39,12 @@ const (
 	BLOCK_BATCH_SIZE       = 500   // More blocks per batch
 )
 
+// StateQueryService interface for reward calculation
+type StateQueryService interface {
+	CalculateEpochRewards(epochNo uint32) error
+	ProcessRefunds(epochNo uint32) error
+}
+
 // BlockProcessor handles processing blocks and storing them in TiDB
 type BlockProcessor struct {
 	db                   *gorm.DB
@@ -50,6 +57,9 @@ type BlockProcessor struct {
 	governanceProcessor  *GovernanceProcessor
 	scriptProcessor      *ScriptProcessor
 	metadataFetcher      MetadataFetcher
+	adaPotsCalculator    *AdaPotsCalculator
+	epochParamsProvider  *EpochParamsProvider
+	stateQueryService    StateQueryService
 	txSemaphore          chan struct{} // Limits concurrent transaction processing
 }
 
@@ -66,6 +76,8 @@ func NewBlockProcessor(db *gorm.DB) *BlockProcessor {
 		metadataProcessor:    NewMetadataProcessor(db),
 		governanceProcessor:  NewGovernanceProcessor(db),
 		scriptProcessor:      NewScriptProcessor(db),
+		adaPotsCalculator:    NewAdaPotsCalculator(db),
+		epochParamsProvider:  NewEpochParamsProvider(db),
 		txSemaphore:          make(chan struct{}, 32), // Increased to 32 for our powerful system
 	}
 	return bp
@@ -572,6 +584,29 @@ func (bp *BlockProcessor) processTransactionOutputs(ctx context.Context, tx *gor
 			}()
 			addressStr = address.String()
 		}()
+		
+		// Handle extremely long Byron addresses that exceed database column limit
+		// Some Byron addresses with derivation paths can be extremely long when converted to string
+		const maxAddressLength = 2048
+		if len(addressStr) > maxAddressLength {
+			// For addresses that are too long, use a hash-based representation
+			// This preserves uniqueness while fitting in the database
+			addressBytes, err := address.Bytes()
+			if err == nil {
+				// Use hex encoding of the raw bytes with a prefix to indicate truncation
+				addressStr = fmt.Sprintf("byron_long_%x", addressBytes)
+				if len(addressStr) > maxAddressLength {
+					// If even the hex is too long, use a hash
+					hash := sha256.Sum256(addressBytes)
+					addressStr = fmt.Sprintf("byron_hash_%x", hash)
+				}
+			} else {
+				// Fallback: use index-based identifier
+				addressStr = fmt.Sprintf("byron_toolong_%d_%d", len(addressStr), i)
+			}
+			unifiederrors.Get().Warning("BlockProcessor", "AddressLength", 
+				fmt.Sprintf("Byron address too long (%d chars), using alternative representation: %s", len(address.String()), addressStr))
+		}
 
 		addressBytes, err := address.Bytes()
 		if err != nil {
@@ -972,9 +1007,38 @@ func (bp *BlockProcessor) processEpochBoundary(ctx context.Context, tx *gorm.DB,
 	// Log epoch transition
 	log.Printf("[INFO] Epoch boundary: entering epoch %d at slot %d", epochNo, *block.SlotNo)
 
-	// Note: Full epoch boundary processing would include:
+	// Calculate ADA pots for this epoch
+	if bp.adaPotsCalculator != nil && epochNo >= 208 { // Only for Shelley+
+		if err := bp.adaPotsCalculator.CalculateAdaPotsForEpoch(epochNo, *block.SlotNo); err != nil {
+			log.Printf("[WARNING] Failed to calculate ada_pots for epoch %d: %v", epochNo, err)
+		}
+	}
+
+	// Provide epoch parameters
+	if bp.epochParamsProvider != nil {
+		if err := bp.epochParamsProvider.ProvideEpochParams(epochNo); err != nil {
+			log.Printf("[WARNING] Failed to provide epoch params for epoch %d: %v", epochNo, err)
+		}
+	}
+
+	// Calculate rewards for the previous epoch (rewards are calculated 2 epochs later)
+	if bp.stateQueryService != nil && epochNo >= 213 { // Rewards start being paid in epoch 213
+		// Calculate rewards for epoch N-2
+		rewardEpoch := epochNo - 2
+		log.Printf("[INFO] Calculating rewards for epoch %d (current epoch: %d)", rewardEpoch, epochNo)
+		
+		if err := bp.stateQueryService.CalculateEpochRewards(epochNo); err != nil {
+			log.Printf("[WARNING] Failed to calculate rewards for epoch %d: %v", rewardEpoch, err)
+		}
+		
+		// Process refunds for the current epoch
+		if err := bp.stateQueryService.ProcessRefunds(epochNo); err != nil {
+			log.Printf("[WARNING] Failed to process refunds for epoch %d: %v", epochNo, err)
+		}
+	}
+
+	// Note: Full epoch boundary processing would also include:
 	// - Snapshot stake distribution
-	// - Calculate rewards
 	// - Update pool parameters
 	// - Process protocol parameter updates
 	// These require additional state query integration
@@ -1216,6 +1280,11 @@ func (bp *BlockProcessor) SetMetadataFetcher(fetcher MetadataFetcher) {
 	}
 }
 
+// SetStateQueryService sets the state query service for reward calculation
+func (bp *BlockProcessor) SetStateQueryService(service StateQueryService) {
+	bp.stateQueryService = service
+}
+
 func stringPtr(s string) *string {
 	return &s
 }
@@ -1296,6 +1365,24 @@ func (bp *BlockProcessor) processCollateralReturn(ctx context.Context, tx *gorm.
 		}()
 		addressStr = address.String()
 	}()
+	
+	// Handle extremely long Byron addresses that exceed database column limit
+	// Note: collateral_tx_outs table has VARCHAR(100) for address, much smaller than tx_outs
+	const maxCollateralAddressLength = 100
+	if len(addressStr) > maxCollateralAddressLength {
+		// For addresses that are too long, use a hash-based representation
+		addressBytes, err := address.Bytes()
+		if err == nil {
+			// Use a short hash representation for collateral addresses
+			hash := sha256.Sum256(addressBytes)
+			addressStr = fmt.Sprintf("byron_h_%x", hash[:8]) // Use first 8 bytes of hash
+		} else {
+			// Fallback: use truncated identifier
+			addressStr = fmt.Sprintf("byron_long_%d", len(addressStr))
+		}
+		unifiederrors.Get().Warning("BlockProcessor", "CollateralAddressLength", 
+			fmt.Sprintf("Collateral address too long (%d chars), using hash: %s", len(address.String()), addressStr))
+	}
 
 	addressBytes, err := address.Bytes()
 	if err != nil {

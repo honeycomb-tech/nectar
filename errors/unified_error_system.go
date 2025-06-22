@@ -434,6 +434,11 @@ func (ues *UnifiedErrorSystem) logToFile(errType ErrorType, component, operation
 		return
 	}
 
+	// Don't log filtered errors to file either
+	if ues.shouldFilterError(errType, component, operation, message) {
+		return
+	}
+
 	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
 	logEntry := fmt.Sprintf("[%s] %s | %s.%s | %s", timestamp, errType, component, operation, message)
 	if details != "" {
@@ -499,6 +504,31 @@ func (ues *UnifiedErrorSystem) shouldFilterError(errType ErrorType, component, o
 	// Filter connection reset errors that are recovered automatically
 	if strings.Contains(message, "connection reset by peer") && 
 	   errType == ErrorTypeDatabase {
+		return true
+	}
+	
+	// Filter pool metadata fetch errors - these are expected and normal
+	if strings.Contains(message, "Pool metadata fetch failed") ||
+	   strings.Contains(message, "hash mismatch") ||
+	   (component == "MetadataFetcher" && errType == ErrorTypeNetwork) ||
+	   (errType == ErrorTypeProcessing && strings.Contains(message, "metadata")) {
+		return true
+	}
+	
+	// Filter historical sync warnings - these are expected during sync
+	if strings.Contains(message, "Historical sync detected") {
+		return true
+	}
+	
+	// Filter write conflict errors that are retried automatically
+	if strings.Contains(message, "Error 9007") || 
+	   strings.Contains(message, "Write conflict") {
+		return true
+	}
+	
+	// Filter deadlock errors that are retried automatically
+	if strings.Contains(message, "Error 1213") || 
+	   strings.Contains(message, "Deadlock found") {
 		return true
 	}
 	

@@ -155,7 +155,7 @@ func (p *ProgressIndicator) renderDetailed() {
 
 	// Header
 	fmt.Fprintln(p.writer, "\n╔════════════════════════════════════════════════════════════╗")
-	fmt.Fprintln(p.writer, "║                    NECTAR INDEXER STATUS                   ║")
+	fmt.Fprintln(p.writer, "║                         Nectar.                            ║")
 	fmt.Fprintln(p.writer, "╚════════════════════════════════════════════════════════════╝")
 
 	// Era Progress

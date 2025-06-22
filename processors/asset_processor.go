@@ -13,6 +13,7 @@ import (
 	"github.com/blinklabs-io/gouroboros/ledger"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // AssetProcessor handles processing multi-assets for Mary era and beyond
@@ -77,11 +78,11 @@ func (mac *MultiAssetCache) GetOrCreateMultiAssetWithTx(tx *gorm.DB, policyID []
 		Fingerprint: common.NewAssetFingerprint(policyID, assetName).String(),
 	}
 
-	// Use ON DUPLICATE KEY UPDATE to handle duplicates gracefully
-	if err := tx.Exec(
-		"INSERT INTO multi_assets (policy, name, fingerprint) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE policy = policy",
-		multiAsset.Policy, multiAsset.Name, multiAsset.Fingerprint,
-	).Error; err != nil {
+	// Use GORM's OnConflict to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "policy"}, {Name: "name"}},
+		DoNothing: true,
+	}).Create(&multiAsset).Error; err != nil {
 		// If still fails, it might be a race condition - just log and continue
 		if !strings.Contains(err.Error(), "Duplicate entry") {
 			return fmt.Errorf("failed to create multi-asset: %w", err)
@@ -156,11 +157,11 @@ func (ap *AssetProcessor) processMintOperation(tx *gorm.DB, txHash []byte, polic
 		Quantity: amount,
 	}
 
-	// Use raw SQL for ON DUPLICATE KEY UPDATE
-	if err := tx.Exec(
-		"INSERT INTO ma_tx_mint (tx_hash, policy, name, quantity) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE quantity = quantity",
-		maTxMint.TxHash, maTxMint.Policy, maTxMint.Name, maTxMint.Quantity,
-	).Error; err != nil {
+	// Use GORM with OnConflict for idempotency
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "policy"}, {Name: "name"}},
+		DoNothing: true,
+	}).Create(maTxMint).Error; err != nil {
 		if !strings.Contains(err.Error(), "Duplicate entry") {
 			return fmt.Errorf("failed to create mint record: %w", err)
 		}
@@ -209,11 +210,11 @@ func (ap *AssetProcessor) processOutputAsset(tx *gorm.DB, txHash []byte, outputI
 		Quantity: quantity,
 	}
 
-	// Use raw SQL for ON DUPLICATE KEY UPDATE
-	if err := tx.Exec(
-		"INSERT INTO ma_tx_out (tx_hash, tx_index, policy, name, quantity) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE quantity = quantity",
-		maTxOut.TxHash, maTxOut.TxIndex, maTxOut.Policy, maTxOut.Name, maTxOut.Quantity,
-	).Error; err != nil {
+	// Use GORM's OnConflict to handle duplicates gracefully
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "tx_index"}, {Name: "policy"}, {Name: "name"}},
+		DoNothing: true,
+	}).Create(maTxOut).Error; err != nil {
 		if !strings.Contains(err.Error(), "Duplicate entry") {
 			return fmt.Errorf("failed to create output asset record: %w", err)
 		}

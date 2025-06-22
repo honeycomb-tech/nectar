@@ -383,21 +383,24 @@ func (cp *CertificateProcessor) ensurePoolHash(tx *gorm.DB, hashBytes []byte) er
 	err := tx.Where("hash_raw = ?", hashBytes).First(&poolHash).Error
 
 	if err == gorm.ErrRecordNotFound {
-		// Create new pool hash with ON DUPLICATE KEY UPDATE
+		// Create new pool hash using GORM with proper conflict handling
 		poolHash = models.PoolHash{
 			HashRaw: hashBytes,
 			View:    hashStr,
 		}
-		// Use raw SQL to handle duplicates gracefully
-		if err := tx.Exec(
-			"INSERT INTO pool_hashes (hash_raw, view) VALUES (?, ?) ON DUPLICATE KEY UPDATE hash_raw = hash_raw",
-			hashBytes, hashStr,
-		).Error; err != nil {
-			// If still fails, it might be a race condition - just log and continue
+		// Use GORM's OnConflict to handle duplicates gracefully
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "hash_raw"}},
+			DoNothing: true,
+		}).Create(&poolHash).Error; err != nil {
+			// If still fails, it might be a different error
 			if !strings.Contains(err.Error(), "Duplicate entry") {
-				return err
+				return fmt.Errorf("failed to create pool hash: %w", err)
 			}
-			log.Printf("[DEBUG] Pool hash already exists (race condition): %s", hashStr)
+			// Race condition - another worker created it, that's fine
+			if GlobalLoggingConfig.LogCertificateDetails.Load() {
+				log.Printf("[DEBUG] Pool hash already exists (race condition): %s", hashStr)
+			}
 		}
 	} else if err != nil {
 		return err

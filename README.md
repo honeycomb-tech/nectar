@@ -36,7 +36,7 @@ cp .env.example .env
 
 3. Run:
 ```bash
-./start-nectar.sh
+./scripts/start-nectar.sh
 ```
 
 ## Configuration
@@ -71,10 +71,7 @@ BULK_MODE_ENABLED=true
 
 ## Testing
 
-Verify all endpoints are working:
-```bash
-./test_dashboard.sh
-```
+Run the indexer and verify the dashboard endpoints are working by accessing the web interface at http://localhost:8080
 
 ## Production Deployment
 

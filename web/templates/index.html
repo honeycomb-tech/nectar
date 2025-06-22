@@ -8,182 +8,250 @@
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <link href="https://fonts.cdnfonts.com/css/pricedown" rel="stylesheet">
     <style>
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+        /* Terminal-like monospace font */
+        * {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
         }
-        .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        /* GTA Style Header */
+        .gta-header {
+            font-family: 'Pricedown Bl', 'Arial Black', sans-serif !important;
+            font-size: 48px;
+            color: #d4af37;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            text-shadow: 
+                3px 3px 0px #9b59b6,
+                -3px -3px 0px #9b59b6,
+                3px -3px 0px #9b59b6,
+                -3px 3px 0px #9b59b6,
+                0 0 20px #9b59b6;
+            margin: 0;
+            padding: 20px 0;
+            text-align: center;
+        }
+        
+        /* Dark terminal theme with purple/gold */
+        body {
+            background-color: #0a0a0a;
+            color: #d4af37; /* Gold */
+        }
+        
+        /* Custom scrollbar */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #1a0a1a;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #9b59b6; /* Purple */
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #8e44ad; /* Darker purple */
+        }
+        
+        /* Era progress bars */
+        .era-progress {
+            background: #1a0a1a;
+            border: 1px solid #9b59b6; /* Purple */
+            height: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .era-progress-fill {
+            background: linear-gradient(90deg, #9b59b6, #d4af37); /* Purple to gold gradient */
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+        
+        .era-progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 11px;
+            color: #fff;
+            text-shadow: 1px 1px 0 #000;
+            z-index: 10;
+        }
+        
+        /* Status indicators */
+        .status-ok { color: #d4af37; } /* Gold */
+        .status-warning { color: #f39c12; } /* Orange-gold */
+        .status-error { color: #e74c3c; } /* Red */
+        
+        /* Box styling */
+        .dashboard-box {
+            background: #0a0a0a;
+            border: 1px solid #9b59b6; /* Purple */
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        
+        /* Activity feed */
+        .activity-line {
+            font-size: 12px;
+            line-height: 1.4;
+            color: #d4af37; /* Gold */
+        }
+        
+        .activity-line .timestamp {
+            color: #8b7a3a; /* Darker gold */
+        }
+        
+        /* Error log styling */
+        .error-entry {
+            font-size: 12px;
+            line-height: 1.4;
+            padding: 4px 0;
+            border-bottom: 1px solid #2a1a2a;
+        }
+        
+        .error-entry:last-child {
+            border-bottom: none;
+        }
+        
+        /* Copy button */
+        .copy-btn {
+            background: #2a1a2a;
+            border: 1px solid #9b59b6; /* Purple */
+            color: #d4af37; /* Gold */
+            padding: 2px 8px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .copy-btn:hover {
+            background: #9b59b6; /* Purple */
+            color: #d4af37; /* Gold */
+            box-shadow: 0 0 5px #9b59b6;
+        }
+        
+        /* Hide default focus outlines */
+        *:focus {
+            outline: none;
+        }
     </style>
 </head>
-<body class="bg-gray-900 text-gray-100">
-    <div class="container mx-auto px-4 py-8">
-        <!-- Header -->
-        <div class="text-center mb-8">
-            <h1 class="text-4xl font-bold text-blue-400 mb-2">NECTAR INDEXER</h1>
-            <p class="text-gray-400">Cardano Blockchain Indexer Dashboard</p>
-        </div>
-
-        <!-- Status Bar -->
-        <div class="bg-gray-800 rounded-lg p-4 mb-6" id="status-container"
-             hx-get="/partials/status" 
-             hx-trigger="load, every 1s">
-            <div class="flex justify-between items-center">
-                <div>
-                    <span class="text-green-400">⚡ Running</span>
-                    <span class="ml-4">Era: <span class="font-bold">Loading...</span></span>
+<body>
+    <div class="max-w-7xl mx-auto p-4">
+        <!-- GTA Style Header -->
+        <h1 class="gta-header">Nectar.</h1>
+        
+        <!-- Main Grid Layout -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            
+            <!-- Left Column: Era Progress -->
+            <div class="lg:col-span-1">
+                <div class="dashboard-box">
+                    <div class="text-center mb-3 text-sm">ERA PROGRESS</div>
+                    <div id="era-progress" hx-get="/partials/eras" hx-trigger="load, every 2s">
+                        <!-- Era progress bars will be loaded here -->
+                    </div>
                 </div>
-                <div>
-                    <span>Slot: <span class="font-mono">0</span> / <span class="font-mono">0</span></span>
-                    <span class="ml-4">Sync: <span class="font-bold">0.0%</span></span>
-                    <span class="ml-4">Speed: <span class="font-bold">0.0 b/s</span></span>
+                
+                <!-- Performance Stats -->
+                <div class="dashboard-box">
+                    <div class="text-center mb-3 text-sm">PERFORMANCE</div>
+                    <div id="performance-stats" hx-get="/api/performance" hx-trigger="load, every 1s">
+                        <div class="grid grid-cols-2 gap-2 text-sm">
+                            <div>Speed:</div><div class="text-right">-- blocks/sec</div>
+                            <div>RAM:</div><div class="text-right">-- GB</div>
+                            <div>CPU:</div><div class="text-right">--%</div>
+                            <div>Runtime:</div><div class="text-right">--h --m</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Middle Column: Main Status -->
+            <div class="lg:col-span-1">
+                <div class="dashboard-box">
+                    <div class="text-center mb-3 text-sm">SYNC STATUS</div>
+                    <div id="sync-status" hx-get="/partials/status" hx-trigger="load, every 1s">
+                        <div class="space-y-2 text-sm">
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>Blocks:</div><div class="text-right">--</div>
+                                <div>Era:</div><div class="text-right">--</div>
+                                <div>Slot:</div><div class="text-right">--</div>
+                                <div>Progress:</div><div class="text-right">--%</div>
+                                <div>Tip:</div><div class="text-right">--</div>
+                                <div>Behind:</div><div class="text-right">-- slots</div>
+                                <div>Status:</div><div class="text-right status-ok">SYNCING</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Activity Feed -->
+                <div class="dashboard-box">
+                    <div class="text-center mb-3 text-sm">ACTIVITY FEED</div>
+                    <div id="activity-feed" class="h-48 overflow-y-auto custom-scrollbar"
+                         hx-get="/partials/activities" hx-trigger="load, every 1s">
+                        <div class="activity-line">
+                            <span class="timestamp">--:--:--</span> Waiting for activities...
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Right Column: Error Monitor -->
+            <div class="lg:col-span-1">
+                <div class="dashboard-box h-full">
+                    <div class="flex justify-between items-center mb-3">
+                        <div class="text-sm">ERROR MONITOR</div>
+                        <button class="copy-btn" onclick="copyErrors(event)">COPY</button>
+                    </div>
+                    <div id="error-monitor" class="h-96 overflow-y-auto custom-scrollbar"
+                         hx-get="/partials/errors" hx-trigger="load, every 2s">
+                        <div class="text-center py-8 text-sm status-ok">
+                            [OK] All systems operational - No errors detected
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- Era Progress -->
-        <div class="bg-gray-800 rounded-lg p-6 mb-6">
-            <h2 class="text-xl font-bold mb-4 text-blue-400">Era Progress</h2>
-            <div class="space-y-3" id="era-progress" 
-                 hx-get="/partials/eras" 
-                 hx-trigger="load, every 2s">
-                <div class="animate-pulse">Loading era progress...</div>
-            </div>
-        </div>
-
-        <!-- Performance Metrics -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-            <div class="bg-gray-800 rounded-lg p-6">
-                <h3 class="text-lg font-bold mb-4 text-blue-400">Performance</h3>
-                <div id="performance-metrics" 
-                     hx-get="/api/performance" 
-                     hx-trigger="load, every 1s"
-                     hx-swap="innerHTML">
-                    <p>Blocks/sec: <span class="font-mono">0.0</span></p>
-                    <p>Total Blocks: <span class="font-mono">0</span></p>
-                    <p>Memory: <span class="font-mono">0 MB</span></p>
-                    <p>CPU: <span class="font-mono">0%</span></p>
-                </div>
-            </div>
-
-            <div class="bg-gray-800 rounded-lg p-6">
-                <h3 class="text-lg font-bold mb-4 text-blue-400">Activity Feed</h3>
-                <div id="activity-feed" class="space-y-2 max-h-40 overflow-y-auto"
-                     hx-get="/partials/activities" 
-                     hx-trigger="load, every 1s">
-                    <div class="text-gray-400 text-sm">Waiting for activities...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Error Monitor -->
-        <div class="bg-gray-800 rounded-lg p-6">
-            <h3 class="text-lg font-bold mb-4 text-red-400">Error Monitor</h3>
-            <div id="error-monitor">
-                <p>Total Errors: <span class="font-mono">0</span></p>
-                <div class="mt-2 space-y-1" id="recent-errors"
-                     hx-get="/partials/errors" 
-                     hx-trigger="load, every 2s">
-                    <div class="text-gray-400 text-sm">No errors reported</div>
-                </div>
-            </div>
-        </div>
     </div>
 
     <script>
-        // WebSocket connection
-        let ws = null;
-        let reconnectInterval = null;
-
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws`;
-            
-            ws = new WebSocket(wsUrl);
-            
-            ws.onopen = function() {
-                console.log('WebSocket connected');
-                // Connection status element doesn't exist, skip updating it
-                if (reconnectInterval) {
-                    clearInterval(reconnectInterval);
-                    reconnectInterval = null;
-                }
-            };
-            
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                handleWebSocketMessage(data);
-            };
-            
-            ws.onclose = function() {
-                console.log('WebSocket disconnected');
-                if (!reconnectInterval) {
-                    reconnectInterval = setInterval(() => {
-                        console.log('Attempting to reconnect...');
-                        connectWebSocket();
-                    }, 5000);
-                }
-            };
-            
-            ws.onerror = function(error) {
-                console.error('WebSocket error:', error);
-            };
+        // Copy errors to clipboard
+        function copyErrors(event) {
+            const errorMonitor = document.getElementById('error-monitor');
+            const text = errorMonitor.innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = event.target;
+                const originalText = btn.innerText;
+                btn.innerText = 'COPIED!';
+                btn.style.backgroundColor = '#d4af37';
+                btn.style.color = '#0a0a0a';
+                setTimeout(() => {
+                    btn.innerText = originalText;
+                    btn.style.backgroundColor = '';
+                    btn.style.color = '';
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+                alert('Failed to copy to clipboard');
+            });
         }
-
-        function handleWebSocketMessage(message) {
-            // Handle different message types
-            switch(message.type) {
-                case 'status':
-                    updateStatus(message.data);
-                    break;
-                case 'era':
-                    updateEraProgress(message.data);
-                    break;
-                case 'activity':
-                    addActivity(message.data);
-                    break;
-                case 'error':
-                    updateError(message.data);
-                    break;
-                case 'performance':
-                    updatePerformance(message.data);
-                    break;
+        
+        // Auto-scroll activity feed to bottom
+        document.addEventListener('htmx:afterSwap', function(evt) {
+            if (evt.detail.target.id === 'activity-feed') {
+                evt.detail.target.scrollTop = evt.detail.target.scrollHeight;
             }
-        }
-
-        function updateStatus(data) {
-            // Update status display - let HTMX handle this
-            console.log('Status update:', data);
-        }
-        
-        function updateEraProgress(data) {
-            // Era updates - let HTMX handle this
-            console.log('Era progress:', data);
-        }
-        
-        function addActivity(data) {
-            // Activity updates - let HTMX handle this
-            console.log('New activity:', data);
-        }
-        
-        function updateError(data) {
-            // Error updates - let HTMX handle this
-            console.log('Error update:', data);
-        }
-        
-        function updatePerformance(data) {
-            // Performance updates - let HTMX handle this
-            console.log('Performance update:', data);
-        }
-
-        // Initial load
-        connectWebSocket();
-        
-        // Load initial data via HTMX
-        htmx.onLoad(function(content) {
-            // Trigger initial data loads
-            htmx.trigger('#era-progress', 'load');
         });
+        
+        // Prevent console spam during development
+        console.log('Nectar Dashboard loaded');
     </script>
 </body>
 </html>

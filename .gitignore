@@ -91,3 +91,6 @@ docker-compose.override.yml
 docker-compose.local.yml 
 # Local gouroboros fork
 gouroboros/
+
+# Documentation that should not be committed
+docs/AGENTS.md

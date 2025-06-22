@@ -23,6 +23,7 @@ import (
 	"github.com/blinklabs-io/gouroboros/protocol/common"
 	"gorm.io/gorm"
 
+	"nectar/config"
 	"nectar/connection"
 	"nectar/dashboard"
 	"nectar/database"
@@ -503,6 +504,32 @@ func clearShelleyData(db *gorm.DB) error {
 	return tx.Commit().Error
 }
 
+// printHelp prints help information
+func printHelp() {
+	fmt.Println("Nectar - High-performance Cardano indexer")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Println("  nectar [flags]                    Run the indexer")
+	fmt.Println("  nectar init [flags]               Initialize a new configuration file")
+	fmt.Println("  nectar migrate-env [flags]        Migrate environment variables to config file")
+	fmt.Println("  nectar version                    Show version information")
+	fmt.Println("  nectar help                       Show this help message")
+	fmt.Println()
+	fmt.Println("Flags:")
+	fmt.Println("  -c, --config string              Path to configuration file (default \"nectar.toml\")")
+	fmt.Println("  --clear-shelley                  Clear all Shelley era data before starting")
+	fmt.Println()
+	fmt.Println("Examples:")
+	fmt.Println("  # Initialize a new configuration file")
+	fmt.Println("  nectar init")
+	fmt.Println()
+	fmt.Println("  # Run with a specific config file")
+	fmt.Println("  nectar --config /etc/nectar/config.toml")
+	fmt.Println()
+	fmt.Println("  # Migrate existing environment variables to config")
+	fmt.Println("  nectar migrate-env --config production.toml")
+}
+
 // rotateLogFiles rotates large log files on startup
 func rotateLogFiles() {
 	// List of log files to check and potentially rotate
@@ -529,13 +556,99 @@ func rotateLogFiles() {
 }
 
 func main() {
+	// Handle subcommands first
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "init":
+			config.HandleInitCommand()
+			return
+		case "migrate-env":
+			config.HandleMigrateEnvCommand()
+			return
+		case "version", "-v", "--version":
+			fmt.Println("Nectar v1.0.0")
+			fmt.Println("High-performance Cardano indexer")
+			return
+		case "help", "-h", "--help":
+			printHelp()
+			return
+		}
+	}
+
 	// Parse command-line flags
-	var clearShelley bool
+	var (
+		clearShelley bool
+		configPath   string
+	)
 	flag.BoolVar(&clearShelley, "clear-shelley", false, "Clear all Shelley era data before starting")
+	flag.StringVar(&configPath, "config", "nectar.toml", "Path to configuration file")
+	flag.StringVar(&configPath, "c", "nectar.toml", "Path to configuration file (shorthand)")
 	flag.Parse()
 	
-	log.Println("NECTAR BLOCKCHAIN INDEXER")
+	log.Println("Nectar.")
 	log.Println("   High-performance Cardano indexer")
+
+	// Check if config file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		fmt.Printf("❌ Configuration file not found: %s\n\n", configPath)
+		fmt.Println("Please run 'nectar init' to create a configuration file.")
+		fmt.Println("Example:")
+		fmt.Println("  nectar init                    # Interactive setup")
+		fmt.Println("  nectar init --no-interactive   # Create default config")
+		os.Exit(1)
+	}
+
+	// Load configuration (no fallback - config is required)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Apply configuration to global variables
+	DB_CONNECTION_POOL = cfg.Database.ConnectionPool
+	WORKER_COUNT = cfg.Performance.WorkerCount
+	STATS_INTERVAL = cfg.Performance.StatsInterval
+	BLOCKFETCH_TIMEOUT = cfg.Performance.BlockfetchTimeout
+	BULK_FETCH_RANGE_SIZE = cfg.Performance.BulkFetchRangeSize
+	BULK_MODE_ENABLED = cfg.Performance.BulkModeEnabled
+	DefaultCardanoNodeSocket = cfg.Cardano.NodeSocket
+	
+	// Also set environment variables for backward compatibility
+	if cfg.Database.DSN != "" {
+		os.Setenv("TIDB_DSN", cfg.Database.DSN)
+		os.Setenv("NECTAR_DSN", cfg.Database.DSN)
+	}
+	
+	if !cfg.Dashboard.Enabled {
+		os.Setenv("NECTAR_NO_DASHBOARD", "true")
+	}
+	os.Setenv("DASHBOARD_TYPE", cfg.Dashboard.Type)
+	os.Setenv("WEB_PORT", fmt.Sprintf("%d", cfg.Dashboard.WebPort))
+	
+	// Set network magic
+	if cfg.Cardano.NetworkMagic > 0 {
+		os.Setenv("CARDANO_NETWORK_MAGIC", fmt.Sprintf("%d", cfg.Cardano.NetworkMagic))
+	}
+	
+	// Set monitoring settings
+	if cfg.Monitoring.LogLevel != "" {
+		os.Setenv("LOG_LEVEL", cfg.Monitoring.LogLevel)
+	}
+
+	// Log configuration summary
+	log.Printf("Configuration loaded from: %s", configPath)
+	networkName := "Custom"
+	switch cfg.Cardano.NetworkMagic {
+	case 764824073:
+		networkName = "Mainnet"
+	case 1:
+		networkName = "Preprod"
+	case 2:
+		networkName = "Preview"
+	}
+	log.Printf("  Network: %s (magic: %d)", networkName, cfg.Cardano.NetworkMagic)
+	log.Printf("  Workers: %d", cfg.Performance.WorkerCount)
+	log.Printf("  Dashboard: %s", cfg.Dashboard.Type)
 
 	// Rotate large log files on startup
 	rotateLogFiles()
@@ -774,6 +887,11 @@ func NewReferenceAlignedIndexer(db *gorm.DB) (*ReferenceAlignedIndexer, error) {
 			}
 			indexer.stateQueryService = statequery.New(stateQueryDB, stateQueryConfig)
 			// Will be captured by log buffer
+			
+			// Set state query service on all block processors for reward calculation
+			for _, processor := range indexer.dbConnections {
+				processor.SetStateQueryService(indexer.stateQueryService)
+			}
 		}
 	}
 
@@ -1604,7 +1722,6 @@ type terminalState struct {
 func (rai *ReferenceAlignedIndexer) renderDashboard() {
 	// DISABLED - Using Bubble Tea dashboard now
 	// The Bubble Tea dashboard has its own render loop
-	return
 }
 
 // prepareDashboardData is deprecated - replaced by direct dashboard updates

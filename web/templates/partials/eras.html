@@ -1,12 +1,9 @@
-{{range $era, $progress := .EraProgress}}
-<div>
-    <div class="flex justify-between mb-1">
-        <span class="text-sm">{{$era}}</span>
-        <span class="text-sm">{{printf "%.1f" $progress}}%</span>
-    </div>
-    <div class="w-full bg-gray-700 rounded-full h-2">
-        <div class="bg-blue-500 h-2 rounded-full transition-all duration-500" 
-             style="width: {{printf "%.1f" $progress}}%"></div>
+{{range .Eras}}
+<div class="mb-3">
+    <div class="text-xs mb-1">{{.Name}}</div>
+    <div class="era-progress">
+        <div class="era-progress-fill" style="width: {{printf "%.1f" .Progress}}%"></div>
+        <div class="era-progress-text">{{printf "%.1f" .Progress}}%</div>
     </div>
 </div>
 {{end}}

@@ -39,7 +39,7 @@ type OffChainPoolFetchError struct {
 }
 
 func (OffChainPoolFetchError) TableName() string {
-	return "off_chain_pool_fetch_error"
+	return "off_chain_pool_fetch_errors"
 }
 
 // OffChainVoteData represents off-chain vote data with hash as primary key

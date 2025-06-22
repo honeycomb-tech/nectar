@@ -1,16 +1,10 @@
 {{range .Activities}}
-<div class="text-sm flex items-start gap-2">
-    <span class="text-gray-500 flex-shrink-0">{{.Timestamp.Format "15:04:05"}}</span>
-    <span class="flex-shrink-0 font-bold 
-        {{if eq .Type "error"}}text-red-400
-        {{else if eq .Type "block"}}text-blue-400
-        {{else if eq .Type "sync"}}text-green-400
-        {{else if eq .Type "system"}}text-yellow-400
-        {{else}}text-gray-400{{end}}">
-        {{.Type}}
-    </span>
-    <span class="text-gray-300 break-words">{{.Message}}</span>
+<div class="activity-line">
+    <span class="timestamp">{{.Timestamp.Format "15:04:05"}}</span>
+    <span>[{{.Type | upper}}] {{.Message}}</span>
 </div>
 {{else}}
-<div class="text-gray-400 text-sm">No recent activities</div>
+<div class="activity-line">
+    <span class="timestamp">--:--:--</span> Waiting for activities...
+</div>
 {{end}}

@@ -71,12 +71,19 @@ func (h *DashboardHandlers) HandleAPIPerformance(c *gin.Context) {
 	
 	// For HTMX partial update
 	if c.GetHeader("HX-Request") == "true" {
+		// Calculate runtime
+		runtime := time.Since(snapshot.StartTime)
+		hours := int(runtime.Hours())
+		minutes := int(runtime.Minutes()) % 60
+		
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(fmt.Sprintf(
-			`<p>Blocks/sec: <span class="font-mono">%.1f</span></p>
-<p>Total Blocks: <span class="font-mono">%d</span></p>
-<p>Memory: <span class="font-mono">%s</span></p>
-<p>CPU: <span class="font-mono">%s</span></p>`, 
-			snapshot.BlocksPerSec, snapshot.TotalBlocks, snapshot.MemoryUsage, snapshot.CPUUsage)))
+			`<div class="grid grid-cols-2 gap-2 text-sm">
+    <div>Speed:</div><div class="text-right">%.0f blocks/sec</div>
+    <div>RAM:</div><div class="text-right">%s</div>
+    <div>CPU:</div><div class="text-right">%s</div>
+    <div>Runtime:</div><div class="text-right">%dh %dm</div>
+</div>`, 
+			snapshot.BlocksPerSec, snapshot.MemoryUsage, snapshot.CPUUsage, hours, minutes)))
 		return
 	}
 	
@@ -128,9 +135,14 @@ func (h *DashboardHandlers) HandleAPIErrors(c *gin.Context) {
 func (h *DashboardHandlers) HandlePartialStatus(c *gin.Context) {
 	snapshot := h.data.GetSnapshot()
 	
-	status := "🔄 Syncing"
+	status := "SYNCING"
 	if snapshot.SyncPercentage >= 99.9 {
-		status = "✅ Synced"
+		status = "SYNCED"
+	}
+	
+	slotsBehind := int64(0)
+	if snapshot.TipSlot > snapshot.CurrentSlot {
+		slotsBehind = int64(snapshot.TipSlot - snapshot.CurrentSlot)
 	}
 	
 	data := gin.H{
@@ -140,6 +152,8 @@ func (h *DashboardHandlers) HandlePartialStatus(c *gin.Context) {
 		"SyncPercentage": snapshot.SyncPercentage,
 		"BlocksPerSec":   snapshot.BlocksPerSec,
 		"CurrentEra":     snapshot.CurrentEra,
+		"TotalBlocks":    snapshot.TotalBlocks,
+		"SlotsBehind":    slotsBehind,
 	}
 	
 	c.HTML(http.StatusOK, "partials/status.html", data)
@@ -149,9 +163,23 @@ func (h *DashboardHandlers) HandlePartialStatus(c *gin.Context) {
 func (h *DashboardHandlers) HandlePartialEras(c *gin.Context) {
 	snapshot := h.data.GetSnapshot()
 	
+	// Define era order
+	eraOrder := []string{"Byron", "Shelley", "Allegra", "Mary", "Alonzo", "Babbage", "Conway"}
+	
+	// Create ordered era progress
+	orderedEras := make([]gin.H, 0, len(eraOrder))
+	for _, era := range eraOrder {
+		if progress, exists := snapshot.EraProgress[era]; exists {
+			orderedEras = append(orderedEras, gin.H{
+				"Name":     era,
+				"Progress": progress,
+			})
+		}
+	}
+	
 	c.HTML(http.StatusOK, "partials/eras.html", gin.H{
-		"EraProgress": snapshot.EraProgress,
-		"CurrentEra":  snapshot.CurrentEra,
+		"Eras":       orderedEras,
+		"CurrentEra": snapshot.CurrentEra,
 	})
 }
 

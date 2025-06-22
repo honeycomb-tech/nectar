@@ -15,21 +15,74 @@
     <!-- Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     
+    <!-- GTA Font (Pricedown) -->
+    <link href="https://fonts.cdnfonts.com/css/pricedown" rel="stylesheet">
+    
     <!-- Chart.js for performance graphs -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     
     <style>
+        /* Purple/Gold Theme Variables */
+        :root {
+            --purple: #9b59b6;
+            --purple-dark: #8e44ad;
+            --purple-light: #a569bd;
+            --gold: #d4af37;
+            --gold-dark: #b8941f;
+            --gold-light: #e6c757;
+            --bg-dark: #0a0a0a;
+            --bg-medium: #1a0a1a;
+            --bg-light: #2a1a2a;
+        }
+        
+        /* GTA Style Headers */
+        h1, h2, .gta-font {
+            font-family: 'Pricedown Bl', 'Arial Black', sans-serif !important;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 
+                2px 2px 0px #000,
+                -2px -2px 0px #000,
+                2px -2px 0px #000,
+                -2px 2px 0px #000,
+                0 0 10px var(--purple);
+        }
+        
         /* Custom styles */
         .badge { @apply inline-flex items-center px-2 py-1 text-xs font-medium rounded; }
-        .badge-info { @apply bg-blue-100 text-blue-800; }
-        .badge-success { @apply bg-green-100 text-green-800; }
-        .badge-warning { @apply bg-yellow-100 text-yellow-800; }
-        .badge-error { @apply bg-red-100 text-red-800; }
-        .badge-secondary { @apply bg-gray-100 text-gray-800; }
+        .badge-info { background-color: var(--purple); color: var(--gold); }
+        .badge-success { background-color: var(--gold); color: var(--bg-dark); }
+        .badge-warning { background-color: #f39c12; color: var(--bg-dark); }
+        .badge-error { background-color: #e74c3c; color: white; }
+        .badge-secondary { background-color: var(--bg-light); color: var(--gold); }
         
-        .metric-card { @apply bg-white rounded-lg shadow p-4; }
-        .metric-value { @apply text-2xl font-bold text-gray-900; }
-        .metric-label { @apply text-sm text-gray-500; }
+        .metric-card { 
+            background-color: var(--bg-medium); 
+            border: 1px solid var(--purple);
+            @apply rounded-lg shadow p-4; 
+        }
+        .metric-value { color: var(--gold); @apply text-2xl font-bold; }
+        .metric-label { color: var(--gold-dark); @apply text-sm; }
+        
+        /* Override Tailwind colors */
+        .bg-white { background-color: var(--bg-medium) !important; }
+        .bg-gray-50 { background-color: var(--bg-dark) !important; }
+        .bg-gray-100 { background-color: var(--bg-light) !important; }
+        .bg-gray-200 { background-color: var(--bg-light) !important; }
+        .bg-gray-900 { background-color: var(--bg-medium) !important; }
+        .text-gray-800 { color: var(--gold) !important; }
+        .text-gray-600 { color: var(--gold-dark) !important; }
+        .text-gray-500 { color: var(--gold-dark) !important; }
+        .text-gray-900 { color: var(--gold) !important; }
+        .text-white { color: var(--gold) !important; }
+        .border-gray-200 { border-color: var(--purple) !important; }
+        .shadow-md { box-shadow: 0 4px 6px -1px rgba(155, 89, 182, 0.1), 0 2px 4px -1px rgba(155, 89, 182, 0.06) !important; }
+        
+        /* Progress bars */
+        .bg-blue-500 { background-color: var(--purple) !important; }
+        .bg-green-400 { background-color: var(--gold) !important; }
+        .bg-green-100 { background-color: var(--gold) !important; }
+        .text-green-800 { color: var(--bg-dark) !important; }
         
         /* Animations */
         @keyframes pulse-soft {
@@ -37,18 +90,22 @@
             50% { opacity: 0.7; }
         }
         .pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+        
+        /* Chart colors */
+        .chart-line { stroke: var(--purple) !important; }
+        .chart-fill { fill: var(--purple) !important; }
     </style>
 </head>
-<body class="bg-gray-50" hx-ext="ws" ws-connect="/ws">
+<body style="background-color: #0a0a0a;" hx-ext="ws" ws-connect="/ws">
     <div id="app" x-data="dashboardApp()">
         <!-- Header/Status Bar -->
-        <div id="status-bar" class="bg-gray-900 text-white shadow-lg" 
+        <div id="status-bar" class="shadow-lg" style="background-color: #1a0a1a; color: #d4af37; border-bottom: 2px solid #9b59b6;" 
              hx-get="/htmx/status" 
              hx-trigger="load, every 2s">
             <div class="container mx-auto px-4 py-3">
                 <div class="flex items-center justify-between">
                     <div class="flex items-center space-x-4">
-                        <h1 class="text-xl font-bold">NECTAR INDEXER</h1>
+                        <h1 class="text-xl font-bold">Nectar.</h1>
                         <span class="text-sm opacity-75">Cardano Blockchain Indexer</span>
                     </div>
                     <div class="flex items-center space-x-4">
@@ -222,8 +279,8 @@
                             datasets: [{
                                 label: 'Blocks/sec',
                                 data: this.chartData.values,
-                                borderColor: 'rgb(59, 130, 246)',
-                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                borderColor: '#9b59b6',
+                                backgroundColor: 'rgba(155, 89, 182, 0.1)',
                                 tension: 0.4
                             }]
                         },

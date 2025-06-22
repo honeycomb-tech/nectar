@@ -120,8 +120,10 @@ func (s *Server) loadTemplates() error {
 		// Load from filesystem
 		log.Printf("[Web] Loading templates from: %s", templateDir)
 		
-		// Create a new template and parse all files
-		tmpl := template.New("")
+		// Create a new template with custom functions
+		tmpl := template.New("").Funcs(template.FuncMap{
+			"upper": strings.ToUpper,
+		})
 		
 		// Load index template
 		indexPath := filepath.Join(templateDir, "index.html")
@@ -143,7 +145,9 @@ func (s *Server) loadTemplates() error {
 			if err != nil {
 				return fmt.Errorf("failed to read template %s: %w", pf.path, err)
 			}
-			tmpl = template.Must(tmpl.New(pf.name).Parse(string(content)))
+			tmpl = template.Must(tmpl.New(pf.name).Funcs(template.FuncMap{
+				"upper": strings.ToUpper,
+			}).Parse(string(content)))
 		}
 		
 		s.router.SetHTMLTemplate(tmpl)
@@ -151,7 +155,9 @@ func (s *Server) loadTemplates() error {
 	} else {
 		// Use embedded templates
 		log.Println("[Web] Using embedded templates")
-		tmpl := template.Must(template.New("").ParseFS(templatesFS, "templates/*", "templates/partials/*"))
+		tmpl := template.Must(template.New("").Funcs(template.FuncMap{
+			"upper": strings.ToUpper,
+		}).ParseFS(templatesFS, "templates/*", "templates/partials/*"))
 		s.router.SetHTMLTemplate(tmpl)
 	}
 	
