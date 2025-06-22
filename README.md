@@ -106,15 +106,9 @@ BULK_MODE_ENABLED=true
 
 ## Migrating from .env to TOML
 
-If you have an existing `.env` file:
-
 ```bash
-# Automatically migrate your .env settings to nectar.toml
+# Automatically convert .env to nectar.toml
 ./nectar migrate-env
-
-# Or manually create config
-./nectar init
-# Then copy your settings from .env to nectar.toml
 ```
 
 ## Testing
@@ -131,8 +125,9 @@ sudo systemctl enable nectar
 sudo systemctl start nectar
 ```
 
-### Docker
+### Docker (Optional)
 
+Note: TiDB runs natively, not in Docker. This is only for Nectar itself if desired:
 ```bash
 docker-compose up -d
 ```
@@ -146,12 +141,13 @@ docker-compose up -d
 ## Architecture
 
 - **main.go**: Entry point and indexer implementation
-- **dashboard/**: Dashboard interfaces and implementations
-- **web/**: Web server, handlers, and templates
-- **errors/**: Unified error system
+- **config/**: Configuration system and initialization
+- **processors/**: Blockchain data processors (blocks, certificates, assets)
 - **models/**: Database models
-- **bulk/**: Bulk operation handlers
-- **metadata/**: Token metadata fetching
+- **dashboard/**: Dashboard interfaces
+- **web/**: Web server and API handlers
+- **errors/**: Unified error system
+- **statequery/**: Cardano node state queries
 
 ## Troubleshooting
 
