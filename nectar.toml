@@ -1,0 +1,51 @@
+# Nectar Configuration
+version = "1.0"
+
+[database]
+dsn = "root:YOUR_PASSWORD_HERE@tcp(127.0.0.1:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=134217728&autocommit=true&interpolateParams=true"
+connection_pool = 32
+max_idle_conns = 16
+max_open_conns = 32
+conn_max_lifetime = 3600000000000  # 1 hour in nanoseconds
+
+[cardano]
+node_socket = "/root/workspace/cardano-node-guild/socket/node.socket"
+network_magic = 764824073
+protocol_mode = "auto"
+
+[cardano.rewards]
+treasury_tax = 0.20
+monetary_expansion = 0.003
+optimal_pool_count = 500
+
+[performance]
+worker_count = 28
+bulk_mode_enabled = true
+bulk_fetch_range_size = 10000
+stats_interval = 5000000000  # 5 seconds
+blockfetch_timeout = 60000000000  # 60 seconds
+block_queue_size = 100000
+
+[dashboard]
+enabled = true
+type = "both"
+web_port = 8080
+detailed_log = false
+
+[monitoring]
+metrics_enabled = true
+metrics_port = 9090
+log_level = "info"
+log_format = "json"
+
+[metadata]
+enabled = true
+worker_count = 12
+queue_size = 5000
+rate_limit = 50
+max_retries = 3
+user_agent = "Nectar/1.0"
+
+[state_query]
+enabled = true
+socket_path = ""

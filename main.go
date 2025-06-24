@@ -1626,65 +1626,7 @@ func (rai *ReferenceAlignedIndexer) updateStats() {
 	}
 }
 
-// handleKeyboardInput handles keyboard controls for the dashboard
-func (rai *ReferenceAlignedIndexer) handleKeyboardInput() {
-	// Set terminal to raw mode to capture single key presses
-	oldState, err := makeRaw()
-	if err != nil {
-		log.Printf("[WARNING] Failed to set terminal to raw mode: %v", err)
-		return
-	}
-	defer restoreTerminal(oldState)
-	
-	// Buffer for reading input
-	buf := make([]byte, 3)
-	
-	// Track last refresh time for debouncing
-	var lastRefreshTime time.Time
-	
-	for {
-		select {
-		case <-rai.ctx.Done():
-			return
-		default:
-			// Read with timeout
-			n, err := os.Stdin.Read(buf)
-			if err != nil || n == 0 {
-				time.Sleep(50 * time.Millisecond)
-				continue
-			}
-			
-			// Handle key presses
-			switch {
-			case buf[0] == 'q' || buf[0] == 'Q':
-				// Quit
-				rai.logToActivity("system", "Dashboard quit requested...")
-				rai.cancel()
-				return
-				
-			case buf[0] == 27 && n > 1: // ESC sequence
-				if n == 3 && buf[1] == '[' {
-					switch buf[2] {
-					case 'A': // Up arrow
-						// Reserved for future scrolling implementation
-					case 'B': // Down arrow
-						// Reserved for future scrolling implementation
-					}
-				}
-				
-			case buf[0] == 'c' || buf[0] == 'C':
-				// Clear - reserved for future implementation
-				
-			case buf[0] == 'r' || buf[0] == 'R':
-				// Force refresh with debounce to prevent rapid consecutive renders
-				if time.Since(lastRefreshTime) > 100*time.Millisecond {
-					rai.renderDashboard()
-					lastRefreshTime = time.Now()
-				}
-			}
-		}
-	}
-}
+
 
 // makeRaw puts the terminal into raw mode and returns the previous state
 func makeRaw() (*terminalState, error) {
@@ -2314,12 +2256,7 @@ func (rai *ReferenceAlignedIndexer) getTipDistance() (distance uint64, percentag
 	return distance, percentage
 }
 
-// isSynced returns whether we're synced to the chain tip
-func (rai *ReferenceAlignedIndexer) isSynced() bool {
-	distance, _ := rai.getTipDistance()
-	// Consider synced if within 50 slots of tip
-	return distance < 50
-}
+
 
 func (rai *ReferenceAlignedIndexer) getMemoryUsage() string {
 	// Try to read actual memory usage from /proc/meminfo
@@ -2359,11 +2296,7 @@ func (rai *ReferenceAlignedIndexer) getCPUUsage() string {
 	return "425%"
 }
 
-func (rai *ReferenceAlignedIndexer) formatDuration(d time.Duration) string {
-	hours := int(d.Hours())
-	minutes := int(d.Minutes()) % 60
-	return fmt.Sprintf("%dh %dm", hours, minutes)
-}
+
 
 func (rai *ReferenceAlignedIndexer) getLastProcessedSlot() (uint64, error) {
 	var lastSlot sql.NullInt64

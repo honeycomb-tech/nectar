@@ -279,6 +279,7 @@ func migrateModelsWithoutCompositeKeys(db *gorm.DB) error {
 		&models.OffChainVoteAuthor{},
 		&models.AdaPots{},
 		&models.EventInfo{},
+		&models.RequiredSigner{},
 	}
 
 	log.Printf("Migrating %d models without composite keys...", len(simpleModels))
