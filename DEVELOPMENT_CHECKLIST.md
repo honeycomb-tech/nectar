@@ -195,10 +195,142 @@ custom_dsn = "user:pass@tcp(gateway.tidbcloud.com:4000)/db?tls=custom&..."
 4. What's the best batch size for serverless?
 5. How to handle rate limits on serverless?
 
-## 10. Next Immediate Steps
+## 10. Selective Sync & Execution Plans (Carp-inspired)
+
+### Current Limitations in Nectar:
+- **Always starts from genesis** or resumes from last block
+- **Indexes everything** - no way to skip data types
+- **No configurable start point** - can't start from specific block/slot
+- **All processors run** - can't disable specific data types
+
+### What Carp Does Right:
+Carp uses modular execution plans in TOML format:
+```toml
+# Example: Only index NFT data
+[MultieraBlockTask]
+[MultieraTransactionTask]
+[MultieraAssetMintTask]
+[MultieraCip25EntryTask]
+# Other tasks omitted = not indexed
+```
+
+### Proposed Nectar Enhancement:
+
+#### 10.1 Execution Plan Configuration
+```toml
+# nectar-execution-plan.toml
+[sync]
+start_slot = 72316896  # Start from Alonzo era
+end_slot = 0           # 0 = sync to tip
+skip_existing = true   # Skip if data exists
+
+[processors]
+# Core processors (usually required)
+blocks = true
+transactions = true
+
+# Optional processors - set false to skip
+certificates = true
+withdrawals = true
+metadata = false       # Skip metadata for faster sync
+scripts = true
+governance = true
+multi_assets = true
+
+# Data filters
+[filters]
+# Only index specific address patterns
+address_filter = ["addr1.*", "stake1.*"]
+
+# Only index transactions above certain value
+min_transaction_value = 1000000  # 1 ADA
+
+# Skip specific transaction types
+skip_tx_types = ["mint", "burn"]
+
+# Only index specific pools
+pool_filter = ["pool1abc...", "pool1def..."]
+```
+
+#### 10.2 Implementation Requirements:
+
+**Config Changes:**
+```go
+type ExecutionPlan struct {
+    Sync SyncConfig `toml:"sync"`
+    Processors ProcessorConfig `toml:"processors"`
+    Filters FilterConfig `toml:"filters"`
+}
+
+type SyncConfig struct {
+    StartSlot uint64 `toml:"start_slot"`
+    EndSlot   uint64 `toml:"end_slot"`
+    SkipExisting bool `toml:"skip_existing"`
+}
+
+type ProcessorConfig struct {
+    Blocks       bool `toml:"blocks"`
+    Transactions bool `toml:"transactions"`
+    Certificates bool `toml:"certificates"`
+    // ... etc
+}
+```
+
+**Checkpoint System Enhancement:**
+- Nectar already has `sync_checkpoints` table (found in models/checkpoint.go)
+- Need to expose this for user-defined start points
+- Add CLI flag: `--start-from-checkpoint <hash>`
+- Add CLI flag: `--start-from-slot <slot>`
+
+#### 10.3 Use Cases:
+
+1. **Research Specific Era:**
+   ```bash
+   nectar sync --start-slot 72316896 --end-slot 84844885  # Only Alonzo era
+   ```
+
+2. **NFT-Only Indexer:**
+   ```bash
+   nectar sync --execution-plan nft-only.toml
+   ```
+
+3. **Pool Analysis:**
+   ```bash
+   nectar sync --execution-plan pool-analysis.toml --pool-filter "pool1abc..."
+   ```
+
+4. **Fast Catch-up:**
+   ```bash
+   nectar sync --skip-metadata --skip-scripts  # 50% faster sync
+   ```
+
+#### 10.4 Benefits:
+- **Faster initial sync** - skip unnecessary data
+- **Lower storage requirements** - only store what you need
+- **Research flexibility** - analyze specific time periods
+- **Custom use cases** - DEX-only, NFT-only, governance-only indexers
+
+#### 10.5 Implementation Steps:
+1. Add `ExecutionPlan` config structure
+2. Modify processors to check if enabled
+3. Add slot range filtering to ChainSync
+4. Implement data filters in processors
+5. Add CLI flags for common scenarios
+6. Create example execution plans
+
+### Infrastructure Already Present:
+- ✅ Checkpoint system exists (`models/checkpoint.go`)
+- ✅ Modular processor architecture
+- ✅ Resume capability from last block
+- ❌ Missing: User-configurable start point
+- ❌ Missing: Processor enable/disable flags
+- ❌ Missing: Data filtering capabilities
+
+## 11. Next Immediate Steps
 
 1. **Create SSL/TLS branch** - Start implementing TLS support
 2. **Test TiDB Serverless** - Manual connection test
 3. **Update Config Structure** - Add new fields
 4. **Document Architecture** - Explain N2C decision
 5. **Plan Migration Path** - From local to serverless
+6. **Design Execution Plan System** - Create specification for selective sync
