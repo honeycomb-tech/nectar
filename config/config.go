@@ -51,7 +51,6 @@ type PerformanceConfig struct {
 	BulkModeEnabled    bool          `toml:"bulk_mode_enabled"`
 	BulkFetchRangeSize int           `toml:"bulk_fetch_range_size"`
 	StatsInterval      time.Duration `toml:"stats_interval"`
-	BlockfetchTimeout  time.Duration `toml:"blockfetch_timeout"`
 	BlockQueueSize     int           `toml:"block_queue_size"`
 }
 
@@ -113,7 +112,6 @@ func Load(path string) (*Config, error) {
 			BulkModeEnabled:    false,
 			BulkFetchRangeSize: 2000,
 			StatsInterval:      3 * time.Second,
-			BlockfetchTimeout:  30 * time.Second,
 			BlockQueueSize:     10000,
 		},
 		Dashboard: DashboardConfig{
@@ -201,9 +199,7 @@ func (c *Config) applyEnvOverrides() {
 	if interval := getEnvDuration("STATS_INTERVAL"); interval > 0 {
 		c.Performance.StatsInterval = interval
 	}
-	if timeout := getEnvDuration("BLOCKFETCH_TIMEOUT"); timeout > 0 {
-		c.Performance.BlockfetchTimeout = timeout
-	}
+
 
 	// Dashboard overrides
 	if dashType := os.Getenv("DASHBOARD_TYPE"); dashType != "" {

@@ -18,7 +18,6 @@ import (
 
 	ouroboros "github.com/blinklabs-io/gouroboros"
 	"github.com/blinklabs-io/gouroboros/ledger"
-	"github.com/blinklabs-io/gouroboros/protocol/blockfetch"
 	"github.com/blinklabs-io/gouroboros/protocol/chainsync"
 	"github.com/blinklabs-io/gouroboros/protocol/common"
 	"gorm.io/gorm"
@@ -42,7 +41,6 @@ var (
 
 	// Timing
 	STATS_INTERVAL        = getDurationEnv("STATS_INTERVAL", 3*time.Second)
-	BLOCKFETCH_TIMEOUT    = getDurationEnv("BLOCKFETCH_TIMEOUT", 30*time.Second)
 	BULK_FETCH_RANGE_SIZE = getIntEnv("BULK_FETCH_RANGE_SIZE", 2000)
 
 	// Bulk mode
@@ -229,8 +227,7 @@ type ReferenceAlignedIndexer struct {
 	isRunning         atomic.Bool
 
 	// Protocol mode tracking
-	nodeToNodeMode atomic.Bool // True if Node-to-Node successful
-	useBlockFetch  atomic.Bool // True if BlockFetch available
+
 
 	// Enhanced monitoring
 	errorStats   *ErrorStatistics
@@ -608,7 +605,6 @@ func main() {
 	DB_CONNECTION_POOL = cfg.Database.ConnectionPool
 	WORKER_COUNT = cfg.Performance.WorkerCount
 	STATS_INTERVAL = cfg.Performance.StatsInterval
-	BLOCKFETCH_TIMEOUT = cfg.Performance.BlockfetchTimeout
 	BULK_FETCH_RANGE_SIZE = cfg.Performance.BulkFetchRangeSize
 	BULK_MODE_ENABLED = cfg.Performance.BulkModeEnabled
 	DefaultCardanoNodeSocket = cfg.Cardano.NodeSocket
@@ -705,7 +701,7 @@ func main() {
 		log.Println("Shelley data cleared successfully")
 	}
 
-	indexer, err := NewReferenceAlignedIndexer(db)
+	indexer, err := NewReferenceAlignedIndexer(db, cfg)
 	if err != nil {
 		// Restore output for fatal error
 		log.SetOutput(originalOutput)
@@ -734,7 +730,7 @@ func main() {
 	}
 }
 
-func NewReferenceAlignedIndexer(db *gorm.DB) (*ReferenceAlignedIndexer, error) {
+func NewReferenceAlignedIndexer(db *gorm.DB, cfg *config.Config) (*ReferenceAlignedIndexer, error) {
 	// Create a temporary buffer to capture log messages during initialization
 	var logBuffer bytes.Buffer
 	log.SetOutput(&logBuffer)
@@ -858,7 +854,7 @@ func NewReferenceAlignedIndexer(db *gorm.DB) (*ReferenceAlignedIndexer, error) {
 	}
 
 	// Initialize metadata fetcher for off-chain data with a dedicated connection
-	if indexer.connPoolManager != nil {
+	if indexer.connPoolManager != nil && cfg.Metadata.Enabled {
 		// Create a dedicated connection for metadata fetcher
 		metadataDB, err := database.InitTiDB()
 		if err != nil {
@@ -873,8 +869,10 @@ func NewReferenceAlignedIndexer(db *gorm.DB) (*ReferenceAlignedIndexer, error) {
 				processor.SetMetadataFetcher(indexer.metadataFetcher)
 			}
 		}
+	}
 
-		// Initialize state query service with another dedicated connection
+	// Initialize state query service with another dedicated connection
+	if indexer.connPoolManager != nil {
 		stateQueryDB, err := database.InitTiDB()
 		if err != nil {
 			// Will be captured by log buffer
@@ -1113,19 +1111,18 @@ func (rai *ReferenceAlignedIndexer) createReferenceConnectionWithBlockFetch() er
 		return fmt.Errorf("failed to detect Cardano node socket: %w", err)
 	}
 
-	rai.logToActivity("system", fmt.Sprintf("Creating smart gouroboros connection at: %s", socketPath))
+	rai.logToActivity("system", fmt.Sprintf("Creating Node-to-Client connection at: %s", socketPath))
 
-	// Create reference-style configs
+	// Create ChainSync config for Node-to-Client mode
 	chainSyncConfig := rai.buildChainSyncConfig()
-	blockFetchConfig := rai.buildBlockFetchConfig()
 
-	// PRODUCTION MODE: Use smart connector for elegant connection handling
-	smartConnector := connection.NewSmartConnector(socketPath, chainSyncConfig, blockFetchConfig)
+	// Use Node-to-Client connection only
+	smartConnector := connection.NewNodeToClientConnector(socketPath, chainSyncConfig)
 
 	// Connect with intelligent protocol negotiation
 	result, err := smartConnector.Connect()
 	if err != nil {
-		return fmt.Errorf("smart connection failed: %w", err)
+		return fmt.Errorf("node-to-client connection failed: %w", err)
 	}
 
 	// Store connection details
@@ -1133,9 +1130,7 @@ func (rai *ReferenceAlignedIndexer) createReferenceConnectionWithBlockFetch() er
 	rai.oConn = result.Connection
 	rai.connMutex.Unlock()
 
-	// Set connection mode
-	rai.nodeToNodeMode.Store(result.Mode == connection.ModeNodeToNode)
-	rai.useBlockFetch.Store(result.HasBlockFetch)
+	// Node-to-Client mode established
 
 	// Start error handler with filtering
 	connection.StartErrorHandler(rai.ctx, result.ErrorChannel, rai.addErrorEntry)
@@ -1153,14 +1148,7 @@ func (rai *ReferenceAlignedIndexer) buildChainSyncConfig() chainsync.Config {
 	)
 }
 
-// buildBlockFetchConfig creates BlockFetch config like reference
-func (rai *ReferenceAlignedIndexer) buildBlockFetchConfig() blockfetch.Config {
-	return blockfetch.NewConfig(
-		blockfetch.WithBlockFunc(rai.blockFetchBlockHandler),
-		blockfetch.WithBatchDoneFunc(rai.batchDoneHandler),
-		blockfetch.WithBlockTimeout(BLOCKFETCH_TIMEOUT),
-	)
-}
+
 
 // Reference-style handlers
 func (rai *ReferenceAlignedIndexer) chainSyncRollBackwardHandler(
@@ -1247,53 +1235,14 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollForwardHandler(
 	blockData any,
 	tip chainsync.Tip,
 ) error {
-	var block ledger.Block
-	switch v := blockData.(type) {
-	case ledger.Block:
-		block = v
-		if processors.GlobalLoggingConfig.LogBlockProcessing.Load() {
-			rai.logToActivity("block", fmt.Sprintf("Processing block at slot %d (type %d)", block.SlotNumber(), blockType))
-		}
-	case ledger.BlockHeader:
-		blockSlot := v.SlotNumber()
-		blockHash := v.Hash().Bytes()
-		rai.logToActivity("sync", fmt.Sprintf("Fetching full block for slot %d via BlockFetch", blockSlot))
-
-		rai.connMutex.RLock()
-		conn := rai.oConn
-		rai.connMutex.RUnlock()
-
-		if conn == nil {
-			return fmt.Errorf("empty ouroboros connection, aborting")
-		}
-
-		// Check if BlockFetch is available
-		if !rai.useBlockFetch.Load() {
-			errors.Get().ProcessingError("BlockFetch", "Availability", fmt.Errorf("BlockFetch not available but received BlockHeader for slot %d", blockSlot))
-			return fmt.Errorf("received BlockHeader but BlockFetch not available (Node-to-Client mode)")
-		}
-
-		// Check if BlockFetch client is available
-		if conn.BlockFetch() == nil || conn.BlockFetch().Client == nil {
-			errors.Get().ProcessingError("BlockFetch", "Client", fmt.Errorf("BlockFetch client is nil for slot %d", blockSlot))
-			return fmt.Errorf("BlockFetch client is not available")
-		}
-
-		var err error
-		block, err = conn.BlockFetch().Client.GetBlock(common.NewPoint(blockSlot, blockHash))
-		if err != nil {
-			errors.Get().NetworkError("BlockFetch", "GetBlock", fmt.Errorf("failed to fetch block from header (slot %d): %w", blockSlot, err))
-			return fmt.Errorf("failed to fetch block from header: %w", err)
-		}
-
-		rai.logToActivity("sync", fmt.Sprintf("Successfully fetched full block for slot %d via BlockFetch", blockSlot))
-		// Add activity log for BlockHeader fetching
-		rai.addActivityEntry("sync", fmt.Sprintf("Fetched full block for slot %d via BlockFetch", blockSlot), map[string]interface{}{
-			"slot": blockSlot,
-			"hash": fmt.Sprintf("%x", blockHash[:8]),
-		})
-	default:
-		return fmt.Errorf("invalid block data type: %T", blockData)
+	// In Node-to-Client mode, ChainSync always delivers full blocks
+	block, ok := blockData.(ledger.Block)
+	if !ok {
+		return fmt.Errorf("invalid block data type: %T (expected ledger.Block)", blockData)
+	}
+	
+	if processors.GlobalLoggingConfig.LogBlockProcessing.Load() {
+		rai.logToActivity("block", fmt.Sprintf("Processing block at slot %d (type %d)", block.SlotNumber(), blockType))
 	}
 
 	// Track tip information
@@ -1330,28 +1279,7 @@ func (rai *ReferenceAlignedIndexer) chainSyncRollForwardHandler(
 	}
 }
 
-func (rai *ReferenceAlignedIndexer) blockFetchBlockHandler(
-	ctx blockfetch.CallbackContext,
-	blockType uint,
-	blockData ledger.Block,
-) error {
-	// Queue the block for async processing
-	select {
-	case rai.blockQueue <- blockQueueItem{
-		block:     blockData,
-		blockType: blockType,
-		retries:   0,
-	}:
-		return nil
-	case <-rai.ctx.Done():
-		return fmt.Errorf("context cancelled")
-	}
-}
 
-func (rai *ReferenceAlignedIndexer) batchDoneHandler(ctx blockfetch.CallbackContext) error {
-	rai.logToActivity("sync", "Reference BlockFetch batch completed!")
-	return nil
-}
 
 // updateSequentialStats - Update performance statistics for sequential processing
 func (rai *ReferenceAlignedIndexer) updateSequentialStats(block ledger.Block) {

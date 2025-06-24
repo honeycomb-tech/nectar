@@ -61,7 +61,7 @@ func NewSmartConnector(socketPath string, chainSync chainsync.Config, blockFetch
 			1,          // Preprod
 		},
 		preferredMode: ModeNodeToNode, // Try Node-to-Node first
-		silentMode:    true,           // Production mode - suppress warnings
+		silentMode:    false,          // Debug mode - show warnings
 	}
 }
 
@@ -121,7 +121,9 @@ func (sc *SmartConnector) tryNodeToNode() (*ConnectionResult, error) {
 
 		if err != nil {
 			conn.Close()
-			// Silently continue without logging
+			if !sc.silentMode {
+				log.Printf("Node-to-Node failed with magic %d: %v", magic, err)
+			}
 			continue
 		}
 

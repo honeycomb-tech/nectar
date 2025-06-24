@@ -231,7 +231,6 @@ func InteractiveInit(configPath string) error {
 	cfg.Performance.BulkModeEnabled = false
 	cfg.Performance.BulkFetchRangeSize = 2000
 	cfg.Performance.StatsInterval = 3000000000      // 3s in nanoseconds
-	cfg.Performance.BlockfetchTimeout = 30000000000 // 30s in nanoseconds
 	cfg.Performance.BlockQueueSize = 10000
 
 	cfg.Dashboard.DetailedLog = false
