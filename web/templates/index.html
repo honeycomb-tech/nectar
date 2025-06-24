@@ -224,10 +224,44 @@
     <script>
         // Copy errors to clipboard
         function copyErrors(event) {
+            event.preventDefault();
             const errorMonitor = document.getElementById('error-monitor');
-            const text = errorMonitor.innerText;
-            navigator.clipboard.writeText(text).then(() => {
-                const btn = event.target;
+            const text = errorMonitor.innerText || errorMonitor.textContent || '';
+            
+            // Fallback method for older browsers or when clipboard API fails
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => {
+                    const btn = event.target;
+                    const originalText = btn.innerText;
+                    btn.innerText = 'COPIED!';
+                    btn.style.backgroundColor = '#d4af37';
+                    btn.style.color = '#0a0a0a';
+                    setTimeout(() => {
+                        btn.innerText = originalText;
+                        btn.style.backgroundColor = '';
+                        btn.style.color = '';
+                    }, 2000);
+                }).catch(err => {
+                    console.error('Failed to copy:', err);
+                    fallbackCopyTextToClipboard(text, event.target);
+                });
+            } else {
+                fallbackCopyTextToClipboard(text, event.target);
+            }
+        }
+        
+        // Fallback copy method using textarea
+        function fallbackCopyTextToClipboard(text, btn) {
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed";
+            textArea.style.left = "-999999px";
+            textArea.style.top = "-999999px";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                document.execCommand('copy');
                 const originalText = btn.innerText;
                 btn.innerText = 'COPIED!';
                 btn.style.backgroundColor = '#d4af37';
@@ -237,10 +271,11 @@
                     btn.style.backgroundColor = '';
                     btn.style.color = '';
                 }, 2000);
-            }).catch(err => {
-                console.error('Failed to copy:', err);
-                alert('Failed to copy to clipboard');
-            });
+            } catch (err) {
+                console.error('Fallback: Oops, unable to copy', err);
+                alert('Failed to copy to clipboard. Please select and copy manually.');
+            }
+            document.body.removeChild(textArea);
         }
         
         // Auto-scroll activity feed to bottom

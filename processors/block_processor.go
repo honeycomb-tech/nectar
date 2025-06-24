@@ -343,6 +343,17 @@ func (bp *BlockProcessor) processTransaction(ctx context.Context, tx *gorm.DB, b
 	}
 
 	// Process scripts
+	if blockType >= BlockTypeAlonzo {
+		// Log every 100th transaction in smart contract eras to verify we're processing them
+		if blockIndex % 100 == 0 {
+			log.Printf("[SCRIPT_CHECK] Processing tx %x at index %d in era %d", txHash, blockIndex, blockType)
+		}
+		
+		// For the first few transactions in Babbage, log detailed info
+		if blockType == BlockTypeBabbage && blockIndex < 5 {
+			log.Printf("[BABBAGE_TX] Processing transaction %d: hash=%x, type=%T", blockIndex, txHash, transaction)
+		}
+	}
 	if err := bp.scriptProcessor.ProcessTransaction(tx, txHash, transaction, blockType); err != nil {
 		unifiederrors.Get().Warning("BlockProcessor", "ProcessScripts", fmt.Sprintf("Failed to process scripts: %v", err))
 	}
@@ -1207,7 +1218,7 @@ func (bp *BlockProcessor) getOutputInlineDatum(output ledger.TransactionOutput, 
 	}
 
 	// Return the hash of the datum
-	hash := ledger.Blake2b256(datumBytes)
+	hash := ledger.NewBlake2b256(datumBytes)
 	return hash[:]
 }
 

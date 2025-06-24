@@ -532,6 +532,17 @@ func (ues *UnifiedErrorSystem) shouldFilterError(errType ErrorType, component, o
 		return true
 	}
 	
+	// Filter Byron collateral address warnings - these are handled correctly
+	if component == "BlockProcessor" && operation == "CollateralAddressLength" &&
+	   strings.Contains(message, "Collateral address too long") {
+		return true
+	}
+	
+	// Filter GORM slow query warnings - these are performance monitoring, not errors
+	if strings.Contains(message, "SLOW QUERY") || strings.Contains(message, "slow SQL") {
+		return true
+	}
+	
 	return false
 }
 

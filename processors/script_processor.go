@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
+	"github.com/blinklabs-io/gouroboros/ledger"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 	"golang.org/x/crypto/blake2b"
 	"gorm.io/gorm"
@@ -77,6 +78,8 @@ func (sc *ScriptCache) EnsureScript(tx *gorm.DB, txHash []byte, scriptHash []byt
 	if err := tx.Create(&script).Error; err != nil {
 		return fmt.Errorf("failed to create script: %w", err)
 	}
+	
+	log.Printf("[DEBUG] Successfully saved %s script with hash %x for tx %x", scriptType, scriptHash, txHash)
 
 	// Cache existence
 	sc.mutex.Lock()
@@ -195,6 +198,7 @@ func (dc *DatumCache) EnsureDatum(tx *gorm.DB, txHash []byte, datumHash []byte, 
 
 // NewScriptProcessor creates a new script processor
 func NewScriptProcessor(db *gorm.DB) *ScriptProcessor {
+	log.Printf("[SCRIPT_PROCESSOR] Creating new ScriptProcessor instance")
 	return &ScriptProcessor{
 		db:             db,
 		scriptCache:    NewScriptCache(db),
@@ -207,6 +211,26 @@ func NewScriptProcessor(db *gorm.DB) *ScriptProcessor {
 func (sp *ScriptProcessor) ProcessTransactionScripts(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
 	if witnessSet == nil {
 		return nil
+	}
+	
+	// Debug: Check what's in the witness set
+	if ws, ok := witnessSet.(interface{ PlutusV1Scripts() [][]byte }); ok {
+		scripts := ws.PlutusV1Scripts()
+		if len(scripts) > 0 {
+			log.Printf("[SCRIPT_FOUND] Found %d PlutusV1 scripts in tx %x", len(scripts), txHash)
+		}
+	}
+	if ws, ok := witnessSet.(interface{ NativeScripts() []common.NativeScript }); ok {
+		scripts := ws.NativeScripts()
+		if len(scripts) > 0 {
+			log.Printf("[SCRIPT_FOUND] Found %d Native scripts in tx %x", len(scripts), txHash)
+		}
+	}
+	if ws, ok := witnessSet.(interface{ PlutusV2Scripts() [][]byte }); ok {
+		scripts := ws.PlutusV2Scripts()
+		if len(scripts) > 0 {
+			log.Printf("[SCRIPT_FOUND] Found %d PlutusV2 scripts in tx %x", len(scripts), txHash)
+		}
 	}
 
 	// Process native scripts
@@ -256,6 +280,9 @@ func (sp *ScriptProcessor) ProcessNativeScripts(ctx context.Context, tx *gorm.DB
 				continue
 			}
 		}
+	default:
+		// Try reflection to see what methods are available
+		log.Printf("[DEBUG] WitnessSet type %T does not implement NativeScripts() method", witnessSet)
 	}
 	return nil
 }
@@ -265,6 +292,9 @@ func (sp *ScriptProcessor) ProcessPlutusV1Scripts(ctx context.Context, tx *gorm.
 	switch ws := witnessSet.(type) {
 	case interface{ PlutusV1Scripts() [][]byte }:
 		scripts := ws.PlutusV1Scripts()
+		if len(scripts) > 0 {
+			log.Printf("[DEBUG] Found %d PlutusV1 scripts for tx %x", len(scripts), txHash)
+		}
 		for _, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "plutus_v1", nil); err != nil {
 				unifiederrors.Get().Warning("ScriptProcessor", "ProcessPlutusV1", fmt.Sprintf("Failed to process PlutusV1 script: %v", err))
@@ -280,6 +310,9 @@ func (sp *ScriptProcessor) ProcessPlutusV2Scripts(ctx context.Context, tx *gorm.
 	switch ws := witnessSet.(type) {
 	case interface{ PlutusV2Scripts() [][]byte }:
 		scripts := ws.PlutusV2Scripts()
+		if len(scripts) > 0 {
+			log.Printf("[DEBUG] Found %d PlutusV2 scripts for tx %x", len(scripts), txHash)
+		}
 		for _, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "plutus_v2", nil); err != nil {
 				unifiederrors.Get().Warning("ScriptProcessor", "ProcessPlutusV2", fmt.Sprintf("Failed to process PlutusV2 script: %v", err))
@@ -307,6 +340,8 @@ func (sp *ScriptProcessor) ProcessPlutusV3Scripts(ctx context.Context, tx *gorm.
 
 // processScript processes a single script
 func (sp *ScriptProcessor) processScript(tx *gorm.DB, txHash []byte, script interface{}, scriptType string, additionalData map[string]interface{}) error {
+	log.Printf("[DEBUG] Processing %s script for tx %x", scriptType, txHash)
+	
 	var scriptBytes []byte
 	var scriptHash []byte
 	var scriptJson *string
@@ -617,16 +652,69 @@ func (sp *ScriptProcessor) ClearCache() {
 
 // ProcessTransaction processes scripts and related data from a transaction
 func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transaction interface{}, blockType uint) error {
+	// Only log for smart contract eras
+	if blockType >= 5 { // Alonzo or later
+		log.Printf("[SCRIPT_DEBUG] ProcessTransaction called for tx %x, blockType %d, transaction type: %T", txHash, blockType, transaction)
+		
+		// Check if it's a concrete type
+		switch t := transaction.(type) {
+		case *ledger.AlonzoTransaction:
+			log.Printf("[SCRIPT_DEBUG] Got AlonzoTransaction pointer")
+		case ledger.AlonzoTransaction:
+			log.Printf("[SCRIPT_DEBUG] Got AlonzoTransaction value")
+		case *ledger.BabbageTransaction:
+			log.Printf("[SCRIPT_DEBUG] Got BabbageTransaction pointer")
+		case ledger.BabbageTransaction:
+			log.Printf("[SCRIPT_DEBUG] Got BabbageTransaction value")
+		default:
+			log.Printf("[SCRIPT_DEBUG] Got unknown transaction type: %T", t)
+		}
+	}
 	// Extract witness set if available
 	var witnessSet interface{}
-	switch txWithWitness := transaction.(type) {
-	case interface{ WitnessSet() interface{} }:
-		witnessSet = txWithWitness.WitnessSet()
-	case interface{ Witnesses() interface{} }:
-		witnessSet = txWithWitness.Witnesses()
+	
+	// Try to get witness set based on transaction type
+	switch tx := transaction.(type) {
+	case *ledger.AlonzoTransaction:
+		witnessSet = &tx.WitnessSet
+		if blockType >= 5 {
+			log.Printf("[ALONZO_TX] Got AlonzoTransaction with witness set for tx %x", txHash)
+		}
+	case *ledger.BabbageTransaction:
+		witnessSet = &tx.WitnessSet
+		if blockType >= 5 {
+			log.Printf("[BABBAGE_TX] Got BabbageTransaction with witness set for tx %x", txHash)
+		}
+	case common.Transaction:
+		// Try the interface method as fallback
+		witnessSet = tx.Witnesses()
+		if blockType >= 5 && witnessSet != nil {
+			log.Printf("[COMMON_TX] Got witness set via interface for tx %x", txHash)
+		}
+	default:
+		// Fall back to other methods
+		switch txWithWitness := transaction.(type) {
+		case interface{ WitnessSet() interface{} }:
+			witnessSet = txWithWitness.WitnessSet()
+			log.Printf("[DEBUG] Got witness set via WitnessSet() for tx %x", txHash)
+		case interface{ Witnesses() interface{} }:
+			witnessSet = txWithWitness.Witnesses()
+			log.Printf("[DEBUG] Got witness set via Witnesses() for tx %x", txHash)
+		default:
+			// For debugging, let's see what type we're actually getting
+			log.Printf("[TRANSACTION_TYPE] No witness methods found. Transaction type: %T for tx %x", transaction, txHash)
+		}
 	}
 
 	if witnessSet != nil {
+		// Count transactions with witness sets in smart contract eras
+		if blockType >= 5 {
+			log.Printf("[WITNESS_FOUND] Transaction %x has witness set in era %d", txHash, blockType)
+		}
+	} else if blockType >= 5 {
+		// Log when witness set is nil in smart contract eras
+		log.Printf("[NO_WITNESS] Transaction %x has NO witness set in era %d", txHash, blockType)
+		
 		// Process scripts
 		if err := sp.ProcessTransactionScripts(context.Background(), tx, txHash, witnessSet); err != nil {
 			return fmt.Errorf("failed to process scripts: %w", err)
