@@ -105,7 +105,7 @@ func (s *Server) loadTemplates() error {
 	templatePaths := []string{
 		"web/templates",                           // Relative to current directory
 		filepath.Join(execDir, "web/templates"),   // Relative to executable
-		"/root/workspace/cardano-stack/Nectar/web/templates", // Absolute path
+		"/app/web/templates",                      // Docker container path
 	}
 	
 	var templateDir string

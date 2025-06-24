@@ -4,11 +4,11 @@ version = "1.0"
 
 [database]
 # Database connection string
-dsn = "root:yourpassword@tcp(localhost:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=67108864&autocommit=true&tx_isolation='READ-COMMITTED'"
-connection_pool = 8
-max_idle_conns = 4
-max_open_conns = 8
-conn_max_lifetime = "1h"
+dsn = "user:password@tcp(localhost:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=134217728&autocommit=true&interpolateParams=true"
+connection_pool = 32
+max_idle_conns = 16
+max_open_conns = 32
+conn_max_lifetime = 3600000000000  # 1 hour in nanoseconds
 
 [cardano]
 # Path to Cardano node socket
@@ -26,23 +26,21 @@ optimal_pool_count = 500
 
 [performance]
 # Number of parallel workers for block processing
-worker_count = 8
+worker_count = 28
 # Enable bulk sync mode for faster initial sync
-bulk_mode_enabled = false
+bulk_mode_enabled = true
 # Number of blocks to fetch in bulk mode
-bulk_fetch_range_size = 2000
+bulk_fetch_range_size = 10000
 # Statistics update interval
-stats_interval = "3s"
-# Timeout for block fetch operations
-blockfetch_timeout = "30s"
+stats_interval = 5000000000  # 5 seconds in nanoseconds
 # Size of the block processing queue
-block_queue_size = 10000
+block_queue_size = 100000
 
 [dashboard]
 # Enable dashboard display
 enabled = true
 # Dashboard type: "terminal", "web", "both", "none"
-type = "terminal"
+type = "both"
 # Web dashboard port (if type is "web" or "both")
 web_port = 8080
 # Show detailed logs in dashboard
@@ -60,13 +58,13 @@ log_format = "json"
 
 [metadata]
 # Enable off-chain metadata fetching
-enabled = true
+enabled = false  # Disabled during initial sync for performance
 # Number of metadata fetcher workers
-worker_count = 4
+worker_count = 12
 # Metadata queue size
-queue_size = 1000
+queue_size = 5000
 # Rate limit (requests per second)
-rate_limit = 10
+rate_limit = 50
 # Maximum retries for failed requests
 max_retries = 3
 # User agent for metadata requests

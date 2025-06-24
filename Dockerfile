@@ -30,6 +30,9 @@ COPY --from=builder /build/nectar .
 # Copy migrations
 COPY --from=builder /build/migrations ./migrations
 
+# Copy web templates for dashboard
+COPY --from=builder /build/web ./web
+
 # Create logs directory
 RUN mkdir -p logs
 

@@ -33,6 +33,7 @@ services:
       - ./logs:/app/logs
     ports:
       - "${METRICS_PORT:-9090}:9090"
+      - "${WEB_PORT:-8080}:8080"
     restart: unless-stopped
     networks:
       - nectar-network
