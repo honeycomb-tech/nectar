@@ -2,7 +2,7 @@
 version = "1.0"
 
 [database]
-dsn = "root:YOUR_PASSWORD_HERE@tcp(127.0.0.1:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=134217728&autocommit=true&interpolateParams=true"
+dsn = "root:Ds*uS+pG278T@-3K60@tcp(127.0.0.1:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=134217728&autocommit=true&interpolateParams=true"
 connection_pool = 32
 max_idle_conns = 16
 max_open_conns = 32
