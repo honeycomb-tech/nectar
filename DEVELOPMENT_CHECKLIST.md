@@ -1,10 +1,18 @@
 # Nectar Development Checklist & Next Steps
 
-## Current Status
-- **Sync Progress**: ~7.3M blocks (Alonzo era)
-- **Performance**: ~39 blocks/second
-- **Architecture**: Node-to-Client mode only (BlockFetch code removed)
-- **Database**: Local TiDB instance
+## Current Status (Updated: June 2025)
+- **Sync Progress**: 7.8M blocks (Babbage era - 46.5% complete)
+- **Performance**: ~50 blocks/second average
+- **Architecture**: Node-to-Client (N2C) protocol only
+- **Database**: Local TiDB instance (3 TiKV nodes)
+- **Known Issues**: Scripts not being extracted (requires resync from Alonzo)
+
+## Recent Fixes (June 2025)
+- ✅ Fixed Blake2b256 panic in Babbage era processing
+- ✅ Added comprehensive script extraction with debug logging
+- ✅ Fixed web dashboard copy button functionality
+- ✅ Filtered GORM slow query warnings from error monitor
+- ✅ Disabled metadata fetcher for performance during initial sync
 
 ## 1. Immediate TODOs While Waiting for Sync
 
