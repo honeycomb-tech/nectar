@@ -91,10 +91,11 @@ func InitTiDB() (*gorm.DB, error) {
 		}
 	}
 
-	sqlDB.SetMaxIdleConns(poolSize * 4) // 4x pool size for idle
-	sqlDB.SetMaxOpenConns(poolSize * 8) // 8x pool size for max open
-	sqlDB.SetConnMaxLifetime(4 * time.Hour)
-	sqlDB.SetConnMaxIdleTime(1 * time.Hour)
+	// Reduced multipliers to prevent connection exhaustion in Shelley era
+	sqlDB.SetMaxIdleConns(poolSize)     // Same as pool size
+	sqlDB.SetMaxOpenConns(poolSize * 2) // Only 2x pool size for max open
+	sqlDB.SetConnMaxLifetime(30 * time.Minute) // Shorter lifetime to prevent stale connections
+	sqlDB.SetConnMaxIdleTime(10 * time.Minute) // Shorter idle time
 
 	// Enable TiDB-specific optimizations
 	if err := enableTiDBOptimizations(db); err != nil {

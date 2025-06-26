@@ -72,6 +72,11 @@ func (uim *UnifiedIndexManager) createCoreIndexes() error {
 		
 		// Slot leaders - FIX FOR SLOW QUERY
 		"CREATE INDEX IF NOT EXISTS idx_slot_leaders_hash_pool ON slot_leaders(hash, pool_hash)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_slot_leaders_hash ON slot_leaders(hash)",
+		
+		// Additional performance indexes for common queries
+		"CREATE INDEX IF NOT EXISTS idx_tx_outs_address_value ON tx_outs(address(100), value)",
+		"CREATE INDEX IF NOT EXISTS idx_blocks_era ON blocks(era)",
 	}
 	
 	return uim.executeIndexes(indexes, "core")

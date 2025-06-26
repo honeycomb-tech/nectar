@@ -28,13 +28,16 @@ const (
 	BlockTypeAlonzo    = 5
 	BlockTypeBabbage   = 6
 	BlockTypeConway    = 7
+
+	// Batch sizes for bulk operations - reduced for Shelley era complexity
+	TX_OUT_BATCH_SIZE      = 5000   // Reduced to prevent timeouts in Shelley
+	TX_IN_BATCH_SIZE       = 5000   // Reduced to prevent timeouts in Shelley
+	MULTI_ASSET_BATCH_SIZE = 2500   // Reduced to prevent timeouts in Shelley
 )
 
 // Optimal batch sizes for different database operations
 const (
 	TRANSACTION_BATCH_SIZE = 3000   // Balanced for stability
-	TX_OUT_BATCH_SIZE      = 20000  // Reduced to prevent timeouts
-	TX_IN_BATCH_SIZE       = 10000  // More reasonable batch size
 	METADATA_BATCH_SIZE    = 2000   // Stable metadata batch
 	BLOCK_BATCH_SIZE       = 1000   // Prevent connection issues
 )
@@ -61,6 +64,7 @@ type BlockProcessor struct {
 	epochParamsProvider  *EpochParamsProvider
 	stateQueryService    StateQueryService
 	txSemaphore          chan struct{} // Limits concurrent transaction processing
+	slotLeaderCache      map[string][]byte // Cache slot leader hashes to avoid DB lookups
 }
 
 // NewBlockProcessor creates a new block processor
@@ -79,6 +83,7 @@ func NewBlockProcessor(db *gorm.DB) *BlockProcessor {
 		adaPotsCalculator:    NewAdaPotsCalculator(db),
 		epochParamsProvider:  NewEpochParamsProvider(db),
 		txSemaphore:          make(chan struct{}, 32), // Increased to 32 for our powerful system
+		slotLeaderCache:      make(map[string][]byte),
 	}
 	return bp
 }
@@ -86,6 +91,12 @@ func NewBlockProcessor(db *gorm.DB) *BlockProcessor {
 // ProcessBlock processes a single block and its transactions
 func (bp *BlockProcessor) ProcessBlock(ctx context.Context, block ledger.Block, blockType uint) error {
 	slotNumber := block.Header().SlotNumber()
+	blockNumber := block.BlockNumber()
+	
+	// Log block processing start
+	if blockNumber % 100 == 0 {
+		log.Printf("[BLOCK] Processing block %d (slot %d, era %s)", blockNumber, slotNumber, bp.getEraName(blockType))
+	}
 	
 	// Special handling for Byron-Shelley boundary
 	if slotNumber >= 4492800 && slotNumber <= 4493000 {
@@ -119,6 +130,7 @@ func (bp *BlockProcessor) ProcessBlock(ctx context.Context, block ledger.Block, 
 
 	// Process block header in its own transaction with proper isolation and retry logic
 	var dbBlock *models.Block
+	startTime := time.Now()
 	err := database.RetryTransaction(bp.db, func(tx *gorm.DB) error {
 		// Set transaction isolation level for better concurrency
 		if err := tx.Exec("SET TRANSACTION ISOLATION LEVEL READ COMMITTED").Error; err != nil {
@@ -132,10 +144,23 @@ func (bp *BlockProcessor) ProcessBlock(ctx context.Context, block ledger.Block, 
 	if err != nil {
 		return fmt.Errorf("failed to process block header: %w", err)
 	}
+	
+	headerTime := time.Since(startTime)
+	if headerTime > 5*time.Second {
+		log.Printf("[PERF] Block header processing took %v for block %d", headerTime, blockNumber)
+	}
 
 	// Process transactions with smaller scope (each tx in its own DB transaction)
+	txStartTime := time.Now()
 	if err := bp.processEraAwareTransactions(ctx, bp.db, dbBlock, block, blockType); err != nil {
 		return fmt.Errorf("failed to process transactions: %w", err)
+	}
+	
+	txTime := time.Since(txStartTime)
+	totalTime := time.Since(startTime)
+	if totalTime > 10*time.Second {
+		log.Printf("[PERF] Block %d processing: header=%v, txs=%v, total=%v (tx count=%d)", 
+			blockNumber, headerTime, txTime, totalTime, len(block.Transactions()))
 	}
 
 	return nil
@@ -233,6 +258,9 @@ func (bp *BlockProcessor) processEraAwareTransactions(ctx context.Context, db *g
 			}
 		}
 		
+		// Log slow transactions
+		txStartTime := time.Now()
+		
 		// Use RetryTransaction for automatic retry with exponential backoff
 		err := database.RetryTransaction(db, func(dbTx *gorm.DB) error {
 			// Set transaction isolation level
@@ -242,6 +270,11 @@ func (bp *BlockProcessor) processEraAwareTransactions(ctx context.Context, db *g
 			}
 			return bp.processTransaction(ctx, dbTx, blockHash, blockNumber, blockTime, idx, tx, blockType)
 		})
+		
+		txProcessTime := time.Since(txStartTime)
+		if txProcessTime > 5*time.Second {
+			log.Printf("[PERF] Transaction %d in block %d took %v to process", idx, blockNumber, txProcessTime)
+		}
 		
 		if err != nil {
 			// Check if it's a duplicate key error (already processed)
@@ -716,20 +749,29 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 		// Create a deterministic hash for Byron slot leader
 		hash := block.Header().Hash()
 		slotLeaderHash := hash[:28] // Use first 28 bytes of block hash
-
-		slotLeader := &models.SlotLeader{
-			Hash:        slotLeaderHash,
-			Description: stringPtr("Byron slot leader"),
+		
+		// Check cache first
+		cacheKey := fmt.Sprintf("%x", slotLeaderHash)
+		if cachedHash, exists := bp.slotLeaderCache[cacheKey]; exists {
+			return cachedHash, nil
 		}
 
-		// Insert or ignore if exists
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "hash"}},
-			DoNothing: true,
-		}).Create(slotLeader).Error; err != nil {
+		// Check if exists in database
+		var exists bool
+		if err := tx.Raw("SELECT EXISTS(SELECT 1 FROM slot_leaders WHERE hash = ?)", slotLeaderHash).Scan(&exists).Error; err != nil {
 			return nil, err
 		}
-
+		
+		if !exists {
+			// Use raw SQL for better performance
+			if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, description) VALUES (?, ?)", 
+				slotLeaderHash, "Byron slot leader").Error; err != nil {
+				return nil, err
+			}
+		}
+		
+		// Cache the result
+		bp.slotLeaderCache[cacheKey] = slotLeaderHash
 		return slotLeaderHash, nil
 	}
 
@@ -750,25 +792,28 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 
 	// Use first 28 bytes as slot leader hash
 	slotLeaderHash := issuerVkey[:28]
-
-	slotLeader := &models.SlotLeader{
-		Hash: slotLeaderHash,
+	
+	// Check cache first
+	cacheKey := fmt.Sprintf("%x", slotLeaderHash)
+	if cachedHash, exists := bp.slotLeaderCache[cacheKey]; exists {
+		return cachedHash, nil
 	}
 
-	// NOTE: Pool hash lookup from issuer vkey would require tracking
-	// all stake pool registrations and their cold keys. For now,
-	// we use the issuer vkey hash directly as the slot leader identifier.
-	// This is sufficient for block attribution but doesn't link to
-	// the actual stake pool entity.
-
-	// Insert or ignore if exists
-	if err := tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "hash"}},
-		DoNothing: true,
-	}).Create(slotLeader).Error; err != nil {
+	// Check if exists in database
+	var exists bool
+	if err := tx.Raw("SELECT EXISTS(SELECT 1 FROM slot_leaders WHERE hash = ?)", slotLeaderHash).Scan(&exists).Error; err != nil {
 		return nil, err
 	}
-
+	
+	if !exists {
+		// Use raw SQL for better performance
+		if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash) VALUES (?)", slotLeaderHash).Error; err != nil {
+			return nil, err
+		}
+	}
+	
+	// Cache the result
+	bp.slotLeaderCache[cacheKey] = slotLeaderHash
 	return slotLeaderHash, nil
 }
 
@@ -1563,10 +1608,19 @@ func (bp *BlockProcessor) EnsureHealthyConnection() error {
 		return fmt.Errorf("failed to get underlying database connection: %w", err)
 	}
 
+	// Get connection pool stats
+	stats := sqlDB.Stats()
+	if stats.OpenConnections > 100 || stats.InUse > 50 {
+		log.Printf("[CONN] Connection pool stats: open=%d, in_use=%d, idle=%d, wait_count=%d, wait_duration=%v", 
+			stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount, stats.WaitDuration)
+	}
+
 	// Try a simple ping first
 	if err := sqlDB.Ping(); err != nil {
 		// Connection is unhealthy, but DON'T close it here
 		// The ConnectionPoolManager should handle recovery
+		log.Printf("[ERROR] Connection ping failed: %v (open=%d, in_use=%d)", 
+			err, stats.OpenConnections, stats.InUse)
 		return fmt.Errorf("connection ping failed: %w", err)
 	}
 

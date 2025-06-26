@@ -681,6 +681,15 @@ func main() {
 			log.Fatalf("Failed to run migrations: %v", err)
 		}
 		log.Println("Database migrations completed!")
+		
+		// Create unified indexes
+		indexManager := database.NewUnifiedIndexManager(db)
+		if err := indexManager.CreateAllIndexes(); err != nil {
+			log.Printf("Warning: Failed to create some indexes: %v", err)
+		}
+		if err := indexManager.AnalyzeTables(); err != nil {
+			log.Printf("Warning: Failed to analyze tables: %v", err)
+		}
 	}
 
 	db, err := database.InitTiDB()
