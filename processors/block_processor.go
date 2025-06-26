@@ -764,7 +764,7 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 		
 		if !exists {
 			// Use raw SQL for better performance
-			if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, description) VALUES (?, ?)", 
+			if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, pool_hash, description) VALUES (?, NULL, ?)", 
 				slotLeaderHash, "Byron slot leader").Error; err != nil {
 				return nil, err
 			}
@@ -807,7 +807,7 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 	
 	if !exists {
 		// Use raw SQL for better performance
-		if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash) VALUES (?)", slotLeaderHash).Error; err != nil {
+		if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, pool_hash, description) VALUES (?, NULL, NULL)", slotLeaderHash).Error; err != nil {
 			return nil, err
 		}
 	}
