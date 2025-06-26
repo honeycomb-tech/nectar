@@ -30,16 +30,16 @@ const (
 	BlockTypeConway    = 7
 
 	// Batch sizes for bulk operations - reduced for Shelley era complexity
-	TX_OUT_BATCH_SIZE      = 5000   // Reduced to prevent timeouts in Shelley
-	TX_IN_BATCH_SIZE       = 5000   // Reduced to prevent timeouts in Shelley
-	MULTI_ASSET_BATCH_SIZE = 2500   // Reduced to prevent timeouts in Shelley
+	TX_OUT_BATCH_SIZE      = 1000   // Optimized for consistent performance
+	TX_IN_BATCH_SIZE       = 1000   // Smaller batches = faster commits
+	MULTI_ASSET_BATCH_SIZE = 500    // Reduced for complex asset operations
 )
 
 // Optimal batch sizes for different database operations
 const (
-	TRANSACTION_BATCH_SIZE = 3000   // Balanced for stability
-	METADATA_BATCH_SIZE    = 2000   // Stable metadata batch
-	BLOCK_BATCH_SIZE       = 1000   // Prevent connection issues
+	TRANSACTION_BATCH_SIZE = 500    // Smaller batches for faster processing
+	METADATA_BATCH_SIZE    = 500    // Quick metadata commits
+	BLOCK_BATCH_SIZE       = 100    // Process blocks quickly
 )
 
 // StateQueryService interface for reward calculation
