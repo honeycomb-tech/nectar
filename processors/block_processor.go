@@ -757,15 +757,15 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 		}
 
 		// Check if exists in database
-		var exists bool
-		if err := tx.Raw("SELECT EXISTS(SELECT 1 FROM slot_leaders WHERE hash = ?)", slotLeaderHash).Scan(&exists).Error; err != nil {
+		var existsInDB bool
+		if err := tx.Raw("SELECT EXISTS(SELECT 1 FROM slot_leaders WHERE hash = ?)", slotLeaderHash).Scan(&existsInDB).Error; err != nil {
 			return nil, err
 		}
 		
-		if !exists {
+		if !existsInDB {
 			// Use raw SQL for better performance
-			if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, pool_hash, description) VALUES (?, NULL, ?)", 
-				slotLeaderHash, "Byron slot leader").Error; err != nil {
+			if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, pool_hash, description) VALUES (?, ?, ?)", 
+				slotLeaderHash, nil, "Byron slot leader").Error; err != nil {
 				return nil, err
 			}
 		}
@@ -800,14 +800,15 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 	}
 
 	// Check if exists in database
-	var exists bool
-	if err := tx.Raw("SELECT EXISTS(SELECT 1 FROM slot_leaders WHERE hash = ?)", slotLeaderHash).Scan(&exists).Error; err != nil {
+	var existsInDB bool
+	if err := tx.Raw("SELECT EXISTS(SELECT 1 FROM slot_leaders WHERE hash = ?)", slotLeaderHash).Scan(&existsInDB).Error; err != nil {
 		return nil, err
 	}
 	
-	if !exists {
+	if !existsInDB {
 		// Use raw SQL for better performance
-		if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, pool_hash, description) VALUES (?, NULL, NULL)", slotLeaderHash).Error; err != nil {
+		if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, pool_hash, description) VALUES (?, ?, ?)", 
+			slotLeaderHash, nil, nil).Error; err != nil {
 			return nil, err
 		}
 	}
