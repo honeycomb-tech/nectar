@@ -397,28 +397,16 @@ func (s *Service) QueryDebugEpochState() (*AdaPotsInfo, error) {
 	}
 
 	// Get raw epoch state
-	// DebugEpochState returns *DebugEpochStateResult which is defined as 'any'
+	// DebugEpochState returns *DebugEpochStateResult which is cbor.RawMessage
 	epochStateResult, err := client.DebugEpochState()
 	if err != nil {
 		return nil, err
 	}
 
-	// The result is typically raw CBOR bytes
-	// Try to extract the bytes based on the actual type
+	// The result is cbor.RawMessage (which is []byte)
 	var rawBytes []byte
-	
-	switch v := (*epochStateResult).(type) {
-	case []byte:
-		rawBytes = v
-	case cbor.RawMessage:
-		rawBytes = []byte(v)
-	default:
-		// If it's something else, try to encode it as CBOR
-		encoded, err := cbor.Encode(v)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encode epoch state: %w", err)
-		}
-		rawBytes = encoded
+	if epochStateResult != nil {
+		rawBytes = []byte(*epochStateResult)
 	}
 
 	return ParseAdaPots(rawBytes)

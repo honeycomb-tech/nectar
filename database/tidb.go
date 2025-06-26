@@ -134,9 +134,15 @@ func AutoMigrate(db *gorm.DB) error {
 		log.Printf("Warning: failed to create TiFlash replicas: %v", err)
 	}
 
-	// Create performance indexes
-	if err := createPerformanceIndexes(db); err != nil {
-		log.Printf("Warning: failed to create performance indexes: %v", err)
+	// Create all indexes using unified index manager
+	indexManager := NewUnifiedIndexManager(db)
+	if err := indexManager.CreateAllIndexes(); err != nil {
+		log.Printf("Warning: failed to create indexes: %v", err)
+	}
+	
+	// Analyze tables for query optimization
+	if err := indexManager.AnalyzeTables(); err != nil {
+		log.Printf("Warning: failed to analyze tables: %v", err)
 	}
 
 	log.Println("Database migrations completed successfully")

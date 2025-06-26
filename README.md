@@ -8,11 +8,11 @@ Nectar is a specialized Cardano indexer that leverages TiDB's distributed SQL ca
 
 ## Current Status (June 2025)
 
-- **Sync Progress**: 46.5% complete (7.8M blocks, 51.6M transactions)
-- **Current Era**: Babbage (slot 73.8M)
+- **Sync Progress**: Byron Era - 95%+ complete (4.3M blocks synced)
+- **Current Era**: Byron (approaching Shelley transition at slot 4,492,800)
 - **Performance**: 50-100 blocks/second average
-- **Database Size**: 100GB+ indexed data across 3 TiKV nodes
-- **Architecture**: Node-to-Client (N2C) protocol exclusively
+- **Database Size**: ~50GB indexed data across 3 TiKV nodes
+- **Architecture**: Node-to-Client (N2C) protocol with StateQuery support
 
 ## Why TiDB?
 
@@ -29,10 +29,10 @@ TiDB solves these problems:
 
 ## Performance Metrics
 
-- **Byron Era**: 200-500 blocks/second (simple transactions)
-- **Shelley-Mary**: 100-200 blocks/second (staking added)
-- **Alonzo-Babbage**: 50-100 blocks/second (smart contracts)
-- **Peak Performance**: 1000+ blocks/second with sufficient hardware
+- **Byron Era**: 50-100 blocks/second (current sync rate)
+- **Shelley-Mary**: 40-80 blocks/second (staking complexity)
+- **Alonzo-Babbage**: 20-50 blocks/second (smart contracts)
+- **Peak Performance**: 100+ blocks/second with optimized settings
 
 ## Requirements
 
@@ -60,9 +60,9 @@ node_socket = "/root/workspace/cardano-node-guild/socket/node.socket"
 network_magic = 764824073
 
 [performance]
-worker_count = 28
+worker_count = 48
 bulk_mode_enabled = true
-bulk_fetch_range_size = 10000
+bulk_fetch_range_size = 20000
 ```
 
 ## Run

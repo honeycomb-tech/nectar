@@ -4,11 +4,13 @@ version = "1.0"
 
 [database]
 # Database connection string
-dsn = "user:password@tcp(localhost:4000)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=300s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=134217728&autocommit=true&interpolateParams=true"
-connection_pool = 32
-max_idle_conns = 16
-max_open_conns = 32
-conn_max_lifetime = 3600000000000  # 1 hour in nanoseconds
+# For TiDB via HAProxy: use port 4100 for load balancing across TiDB servers
+# For direct TiDB connection: use ports 4000-4002
+dsn = \"user:password@tcp(localhost:4100)/nectar?charset=utf8mb4&parseTime=True&loc=Local&timeout=60s&readTimeout=60s&writeTimeout=60s&maxAllowedPacket=134217728&autocommit=true&interpolateParams=true\"
+connection_pool = 16      # Base pool size (multiplied by 8x internally = 128 total)
+max_idle_conns = 32       # Keep connections ready for bursts
+max_open_conns = 64       # Hard limit to prevent connection exhaustion
+conn_max_lifetime = 300000000000   # 5 minutes in nanoseconds (recycle connections)
 
 [cardano]
 # Path to Cardano node socket
@@ -26,15 +28,17 @@ optimal_pool_count = 500
 
 [performance]
 # Number of parallel workers for block processing
-worker_count = 28
+worker_count = 48         # Optimized for multi-era sync (Byron needs ~20, Shelley+ needs 40+)
 # Enable bulk sync mode for faster initial sync
 bulk_mode_enabled = true
 # Number of blocks to fetch in bulk mode
-bulk_fetch_range_size = 10000
+bulk_fetch_range_size = 20000     # Increased for better throughput
 # Statistics update interval
-stats_interval = 5000000000  # 5 seconds in nanoseconds
+stats_interval = 5000000000       # 5 seconds in nanoseconds
+# Blockfetch timeout
+blockfetch_timeout = 60000000000  # 60 seconds in nanoseconds
 # Size of the block processing queue
-block_queue_size = 100000
+block_queue_size = 200000         # Large queue for bulk operations
 
 [dashboard]
 # Enable dashboard display
