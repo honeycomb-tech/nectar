@@ -11,6 +11,7 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -512,13 +513,12 @@ func GetDefaultConnectionPoolConfig() *ConnectionPoolConfig {
 // FastCreate performs a create operation optimized for TiDB
 // It avoids the slow ON DUPLICATE KEY UPDATE pattern
 func FastCreate(tx *gorm.DB, value interface{}) error {
-	// First, try a simple create
-	if err := tx.Create(value).Error; err != nil {
-		// If it's a duplicate entry error, that's OK - record already exists
-		if strings.Contains(err.Error(), "Duplicate entry") {
-			return nil // Silently ignore duplicates
+	// Use GORM's Clauses to generate INSERT IGNORE
+	if err := tx.Clauses(clause.Insert{Modifier: "IGNORE"}).Create(value).Error; err != nil {
+		// Log any real errors (not duplicates)
+		if !strings.Contains(err.Error(), "Duplicate entry") && err != nil {
+			return err
 		}
-		return err
 	}
 	return nil
 }
@@ -535,8 +535,8 @@ func FastCreateInBatches(tx *gorm.DB, value interface{}, batchSize int) error {
 	// Set batch processing hints
 	optimizedTx.Exec("SET SESSION tidb_dml_batch_size = ?", batchSize*2)
 	
-	// Try batch create
-	if err := optimizedTx.CreateInBatches(value, batchSize).Error; err != nil {
+	// Try batch create with INSERT IGNORE
+	if err := optimizedTx.Clauses(clause.Insert{Modifier: "IGNORE"}).CreateInBatches(value, batchSize).Error; err != nil {
 		// If it's a duplicate entry error, that's OK
 		if strings.Contains(err.Error(), "Duplicate entry") {
 			return nil
