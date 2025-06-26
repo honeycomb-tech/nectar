@@ -531,3 +531,40 @@ func GetDefaultConnectionPoolConfig() *ConnectionPoolConfig {
 		HealthCheckInterval: 30 * time.Second,
 	}
 }
+
+// FastCreate performs a create operation optimized for TiDB
+// It avoids the slow ON DUPLICATE KEY UPDATE pattern
+func FastCreate(tx *gorm.DB, value interface{}) error {
+	// First, try a simple create
+	if err := tx.Create(value).Error; err != nil {
+		// If it's a duplicate entry error, that's OK - record already exists
+		if strings.Contains(err.Error(), "Duplicate entry") {
+			return nil // Silently ignore duplicates
+		}
+		return err
+	}
+	return nil
+}
+
+// FastCreateInBatches performs batch create optimized for TiDB
+// It avoids the slow ON DUPLICATE KEY UPDATE pattern
+func FastCreateInBatches(tx *gorm.DB, value interface{}, batchSize int) error {
+	// Set TiDB optimizations for this operation
+	optimizedTx := tx.Session(&gorm.Session{
+		SkipHooks: true,
+		PrepareStmt: false,
+	})
+	
+	// Set batch processing hints
+	optimizedTx.Exec("SET SESSION tidb_dml_batch_size = ?", batchSize*2)
+	
+	// Try batch create
+	if err := optimizedTx.CreateInBatches(value, batchSize).Error; err != nil {
+		// If it's a duplicate entry error, that's OK
+		if strings.Contains(err.Error(), "Duplicate entry") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}

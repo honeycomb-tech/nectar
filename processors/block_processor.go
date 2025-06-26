@@ -211,12 +211,9 @@ func (bp *BlockProcessor) processBlockHeader(ctx context.Context, tx *gorm.DB, b
 	// Set era-specific fields
 	bp.setEraSpecificBlockFields(dbBlock, block, blockType)
 
-	// Insert block with duplicate handling
-	if err := tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "hash"}},
-		DoNothing: true,
-	}).Create(dbBlock).Error; err != nil {
-		// Check if it's a duplicate (already exists)
+	// Insert block with fast duplicate handling
+	if err := database.FastCreate(tx, dbBlock); err != nil {
+		// If it failed for a reason other than duplicate, check if block exists
 		var existingBlock models.Block
 		if err2 := tx.Where("hash = ?", hashBytes).First(&existingBlock).Error; err2 == nil {
 			// Block already exists, use it
@@ -327,11 +324,8 @@ func (bp *BlockProcessor) processTransaction(ctx context.Context, tx *gorm.DB, b
 	// Era-specific transaction processing
 	bp.setEraSpecificTxFields(&dbTx, transaction, blockType)
 
-	// Insert transaction
-	if err := tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "hash"}},
-		DoNothing: true,
-	}).Create(&dbTx).Error; err != nil {
+	// Insert transaction with fast duplicate handling
+	if err := database.FastCreate(tx, &dbTx); err != nil {
 		return fmt.Errorf("failed to insert transaction: %w", err)
 	}
 
@@ -475,11 +469,8 @@ func (bp *BlockProcessor) processTransactionBatch(ctx context.Context, tx *gorm.
 		txBatch = append(txBatch, dbTx)
 	}
 
-	// Batch insert transactions
-	if err := tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "hash"}},
-		DoNothing: true,
-	}).CreateInBatches(txBatch, TRANSACTION_BATCH_SIZE).Error; err != nil {
+	// Batch insert transactions with fast duplicate handling
+	if err := database.FastCreateInBatches(tx, txBatch, TRANSACTION_BATCH_SIZE); err != nil {
 		return fmt.Errorf("failed to batch insert transactions: %w", err)
 	}
 
@@ -576,13 +567,10 @@ func (bp *BlockProcessor) processTransactionInputs(ctx context.Context, tx *gorm
 		inputBatch = append(inputBatch, dbInput)
 	}
 
-	// Batch insert inputs with ON CONFLICT DO NOTHING to handle duplicates
+	// Batch insert inputs with fast duplicate handling
 	// Use retry operation for transient errors
 	err := database.RetryOperation(func() error {
-		return tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "tx_in_hash"}, {Name: "tx_in_index"}},
-			DoNothing: true,
-		}).CreateInBatches(inputBatch, TX_IN_BATCH_SIZE).Error
+		return database.FastCreateInBatches(tx, inputBatch, TX_IN_BATCH_SIZE)
 	})
 	
 	if err != nil {
@@ -763,16 +751,13 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 		}
 		
 		if !existsInDB {
-			// Create slot leader using GORM
+			// Create slot leader using fast insert
 			slotLeader := &models.SlotLeader{
 				Hash:        slotLeaderHash,
 				PoolHash:    nil,
 				Description: &[]string{"Byron slot leader"}[0],
 			}
-			if err := tx.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "hash"}},
-				DoNothing: true,
-			}).Create(slotLeader).Error; err != nil {
+			if err := database.FastCreate(tx, slotLeader); err != nil {
 				return nil, err
 			}
 		}
@@ -813,16 +798,13 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 	}
 	
 	if !existsInDB {
-		// Create slot leader using GORM
+		// Create slot leader using fast insert
 		slotLeader := &models.SlotLeader{
 			Hash:        slotLeaderHash,
 			PoolHash:    nil,
 			Description: nil,
 		}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "hash"}},
-			DoNothing: true,
-		}).Create(slotLeader).Error; err != nil {
+		if err := database.FastCreate(tx, slotLeader); err != nil {
 			return nil, err
 		}
 	}
