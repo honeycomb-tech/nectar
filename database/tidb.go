@@ -516,7 +516,7 @@ func FastCreate(tx *gorm.DB, value interface{}) error {
 	// Use GORM's Clauses to generate INSERT IGNORE
 	if err := tx.Clauses(clause.Insert{Modifier: "IGNORE"}).Create(value).Error; err != nil {
 		// Log any real errors (not duplicates)
-		if !strings.Contains(err.Error(), "Duplicate entry") && err != nil {
+		if !strings.Contains(err.Error(), "Duplicate entry") {
 			return err
 		}
 	}

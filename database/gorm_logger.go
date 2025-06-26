@@ -45,7 +45,12 @@ func (l *UnifiedGormLogger) Info(ctx context.Context, msg string, data ...interf
 // Warn logs warning level messages
 func (l *UnifiedGormLogger) Warn(ctx context.Context, msg string, data ...interface{}) {
 	if l.LogLevel >= gormlogger.Warn {
-		unifiederrors.Get().Warning("GORM", "Warning", fmt.Sprintf(msg, data...))
+		// Skip harmless EOF connection warnings
+		formattedMsg := fmt.Sprintf(msg, data...)
+		if strings.Contains(formattedMsg, "closing bad idle connection") && strings.Contains(formattedMsg, "EOF") {
+			return // Skip this warning - it's normal behavior
+		}
+		unifiederrors.Get().Warning("GORM", "Warning", formattedMsg)
 	}
 }
 
