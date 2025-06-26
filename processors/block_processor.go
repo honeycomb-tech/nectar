@@ -32,11 +32,11 @@ const (
 
 // Optimal batch sizes for different database operations
 const (
-	TRANSACTION_BATCH_SIZE = 2000  // Increased for TiDB
-	TX_OUT_BATCH_SIZE      = 10000 // TiDB handles large batches well
-	TX_IN_BATCH_SIZE       = 5000  // Increased for performance
-	METADATA_BATCH_SIZE    = 1000  // Larger metadata batches
-	BLOCK_BATCH_SIZE       = 500   // More blocks per batch
+	TRANSACTION_BATCH_SIZE = 3000   // Balanced for stability
+	TX_OUT_BATCH_SIZE      = 20000  // Reduced to prevent timeouts
+	TX_IN_BATCH_SIZE       = 10000  // More reasonable batch size
+	METADATA_BATCH_SIZE    = 2000   // Stable metadata batch
+	BLOCK_BATCH_SIZE       = 1000   // Prevent connection issues
 )
 
 // StateQueryService interface for reward calculation

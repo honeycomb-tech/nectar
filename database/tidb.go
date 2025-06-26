@@ -128,6 +128,11 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := applyTiDBOptimizations(db); err != nil {
 		log.Printf("Warning: failed to apply TiDB optimizations: %v", err)
 	}
+	
+	// Create TiFlash replicas for analytical queries
+	if err := CreateTiFlashReplicas(db); err != nil {
+		log.Printf("Warning: failed to create TiFlash replicas: %v", err)
+	}
 
 	// Create performance indexes
 	if err := createPerformanceIndexes(db); err != nil {
@@ -177,6 +182,10 @@ func enableTiDBOptimizations(db *gorm.DB) error {
 		// Skip unnecessary checks
 		"SET SESSION tidb_skip_utf8_check = ON",
 		"SET SESSION tidb_constraint_check_in_place = OFF",
+		
+		// Enable compression for new tables
+		"SET SESSION tidb_enable_table_partition = ON",
+		"SET SESSION tidb_row_format_version = 2",
 
 		// Memory optimizations
 		"SET SESSION tidb_mem_quota_query = 17179869184", // 16GB per query

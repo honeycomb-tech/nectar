@@ -1,0 +1,22 @@
+tiflash_servers:
+  - host: 127.0.0.1
+    ssh_port: 22
+    tcp_port: 9000
+    http_port: 8123
+    flash_service_port: 3930
+    flash_proxy_port: 20170
+    flash_proxy_status_port: 20292
+    metrics_port: 8234
+    deploy_dir: /tidb-deploy/tiflash-9000
+    data_dir: /tidb-data/tiflash-9000
+    numa_node: "0"
+    config:
+      logger.level: "info"
+      flash.flash_cluster.refresh_interval: 20
+      flash.compact_log_min_period: 200
+      profiles.default.max_memory_usage: 25769803776  # 24GB
+      profiles.default.max_memory_usage_for_all_queries: 25769803776
+      flash.overlap_threshold: 0.6
+      storage.main.dir: ["/tidb-data/tiflash-9000"]
+      storage.latest.dir: ["/tidb-data/tiflash-9000"]
+      storage.raft.dir: ["/tidb-data/tiflash-9000"]

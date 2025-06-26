@@ -41,11 +41,13 @@ version = "1.0"
 [database]
 # Database connection string
 # For TiDB, use: root:password@tcp(host:port)/database?charset=utf8mb4&parseTime=True
+# For HAProxy load balancer: root:password@tcp(127.0.0.1:3999)/database?...
 dsn = ""
-connection_pool = 8
-max_idle_conns = 4
-max_open_conns = 8
-conn_max_lifetime = "1h"
+# Optimized for single-node with multiple TiDB servers
+connection_pool = 32
+max_idle_conns = 16
+max_open_conns = 96
+conn_max_lifetime = "4h"
 
 [cardano]
 # Path to Cardano node socket
@@ -63,17 +65,18 @@ optimal_pool_count = 500
 
 [performance]
 # Number of parallel workers for block processing
-worker_count = 8
+# Optimized for AMD Ryzen 9 7950X3D (32 threads)
+worker_count = 24
 # Enable bulk sync mode for faster initial sync
-bulk_mode_enabled = false
+bulk_mode_enabled = true
 # Number of blocks to fetch in bulk mode
-bulk_fetch_range_size = 2000
+bulk_fetch_range_size = 5000
 # Statistics update interval
 stats_interval = "3s"
 # Timeout for block fetch operations
 blockfetch_timeout = "30s"
 # Size of the block processing queue
-block_queue_size = 10000
+block_queue_size = 50000
 
 [dashboard]
 # Enable dashboard display

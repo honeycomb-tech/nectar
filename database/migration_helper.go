@@ -289,3 +289,40 @@ func migrateModelsWithoutCompositeKeys(db *gorm.DB) error {
 
 	return nil
 }
+
+// CreateTiFlashReplicas creates TiFlash replicas for analytical queries
+func CreateTiFlashReplicas(db *gorm.DB) error {
+	log.Println("Creating TiFlash replicas for analytical queries...")
+	
+	// Main tables that benefit from TiFlash for analytics
+	tiflashTables := []string{
+		"blocks",
+		"txes", 
+		"tx_outs",
+		"tx_ins",
+		"multi_assets",
+		"ma_tx_outs",
+		"ma_tx_mints",
+		"pool_stats",
+		"epoch_stakes",
+		"rewards",
+		"delegations",
+		"stake_addresses",
+		"pool_updates",
+	}
+	
+	for _, table := range tiflashTables {
+		sql := fmt.Sprintf("ALTER TABLE %s SET TIFLASH REPLICA 1", table)
+		if err := db.Exec(sql).Error; err != nil {
+			// Log but don't fail - TiFlash might not be available
+			log.Printf("Warning: Failed to create TiFlash replica for %s: %v", table, err)
+		} else {
+			log.Printf("Created TiFlash replica for table: %s", table)
+		}
+	}
+	
+	// Wait a moment for replicas to start syncing
+	log.Println("TiFlash replicas created. They will sync in the background.")
+	
+	return nil
+}
