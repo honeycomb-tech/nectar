@@ -71,6 +71,37 @@ DROP TABLE IF EXISTS sync_status;
 DROP TABLE IF EXISTS error_logs;
 DROP TABLE IF EXISTS performance_metrics;
 
+-- Additional tables found in database
+DROP TABLE IF EXISTS committees;
+DROP TABLE IF EXISTS constitutions;
+DROP TABLE IF EXISTS d_rep_distrs;
+DROP TABLE IF EXISTS d_rep_hashes;
+DROP TABLE IF EXISTS data;
+DROP TABLE IF EXISTS delisted_pools;
+DROP TABLE IF EXISTS epoch_stake_progresses;
+DROP TABLE IF EXISTS epoch_stakes;
+DROP TABLE IF EXISTS epoch_states;
+DROP TABLE IF EXISTS epoches;
+DROP TABLE IF EXISTS event_infos;
+DROP TABLE IF EXISTS off_chain_pool_data;
+DROP TABLE IF EXISTS off_chain_pool_fetch_errors;
+DROP TABLE IF EXISTS off_chain_vote_authors;
+DROP TABLE IF EXISTS off_chain_vote_d_rep_data;
+DROP TABLE IF EXISTS off_chain_vote_data;
+DROP TABLE IF EXISTS off_chain_vote_external_updates;
+DROP TABLE IF EXISTS off_chain_vote_fetch_errors;
+DROP TABLE IF EXISTS off_chain_vote_gov_action_data;
+DROP TABLE IF EXISTS off_chain_vote_references;
+DROP TABLE IF EXISTS pot_transfers;
+DROP TABLE IF EXISTS redeemer_data;
+DROP TABLE IF EXISTS required_signers;
+DROP TABLE IF EXISTS reserves;
+DROP TABLE IF EXISTS reward_rests;
+DROP TABLE IF EXISTS treasuries;
+DROP TABLE IF EXISTS tx_cbors;
+DROP TABLE IF EXISTS utxo_deltas;
+DROP TABLE IF EXISTS utxo_states;
+
 SET FOREIGN_KEY_CHECKS = 1;
 
 SELECT 'All tables dropped successfully!' as status;

@@ -153,25 +153,7 @@ func AutoMigrate(db *gorm.DB) error {
 // applyTiDBOptimizations applies TiDB-specific optimizations
 func applyTiDBOptimizations(db *gorm.DB) error {
 	log.Println("Applying TiDB-specific optimizations...")
-
-	// Create indexes for better query performance
-	indexQueries := []string{
-		// Hash-based lookups are already primary keys, but we need some additional indexes
-		"CREATE INDEX IF NOT EXISTS idx_blocks_epoch_no ON blocks(epoch_no)",
-		"CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(time)",
-		"CREATE INDEX IF NOT EXISTS idx_txes_block_hash ON txes(block_hash)",
-		"CREATE INDEX IF NOT EXISTS idx_tx_outs_stake_address ON tx_outs(stake_address_hash)",
-		"CREATE INDEX IF NOT EXISTS idx_tx_ins_spent ON tx_ins(tx_out_hash, tx_out_index)",
-		"CREATE INDEX IF NOT EXISTS idx_delegations_epoch ON delegations(active_epoch_no)",
-		"CREATE INDEX IF NOT EXISTS idx_rewards_epoch ON rewards(earned_epoch)",
-	}
-
-	for _, query := range indexQueries {
-		if err := db.Exec(query).Error; err != nil {
-			log.Printf("Warning: failed to create index (%s): %v", query, err)
-		}
-	}
-
+	// Indexes are now created by unified_indexes.go to avoid duplication
 	log.Println("TiDB optimizations applied")
 	return nil
 }
@@ -227,34 +209,7 @@ func enableTiDBOptimizations(db *gorm.DB) error {
 	return nil
 }
 
-// createPerformanceIndexes creates additional indexes for performance optimization
-func createPerformanceIndexes(db *gorm.DB) error {
-	log.Println("Creating performance indexes...")
 
-	performanceIndexes := []string{
-		// Index for fast lookup of latest blocks (fixes slow query)
-		"CREATE INDEX IF NOT EXISTS idx_blocks_slot_no_desc ON blocks(slot_no DESC)",
-		"CREATE INDEX IF NOT EXISTS idx_blocks_slot_hash ON blocks(slot_no DESC, hash)",
-
-		// Additional performance indexes for common queries
-		"CREATE INDEX IF NOT EXISTS idx_blocks_block_no_desc ON blocks(block_no DESC)",
-		"CREATE INDEX IF NOT EXISTS idx_txes_block_index ON txes(block_hash, block_index)",
-		"CREATE INDEX IF NOT EXISTS idx_tx_outs_value ON tx_outs(value)",
-		"CREATE INDEX IF NOT EXISTS idx_delegations_addr_epoch ON delegations(addr_hash, active_epoch_no)",
-		"CREATE INDEX IF NOT EXISTS idx_pool_stats_epoch_hash ON pool_stats(epoch_no, pool_hash)",
-	}
-
-	for _, index := range performanceIndexes {
-		log.Printf("Creating index: %s", index)
-		if err := db.Exec(index).Error; err != nil {
-			log.Printf("Warning: failed to create performance index (%s): %v", index, err)
-			// Continue with other indexes even if one fails
-		}
-	}
-
-	log.Println("Performance indexes created")
-	return nil
-}
 
 // CheckDatabaseConnection verifies the database connection is healthy
 func CheckDatabaseConnection(db *gorm.DB) error {
