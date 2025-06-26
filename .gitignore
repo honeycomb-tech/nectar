@@ -96,3 +96,4 @@ gouroboros/
 # Documentation that should not be committed
 docs/AGENTS.md
 nectar.toml
+AUDIT_REPORT.md

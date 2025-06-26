@@ -110,9 +110,9 @@ func (uim *UnifiedIndexManager) createShelleyIndexes() error {
 		// Pool hashes
 		"CREATE INDEX IF NOT EXISTS idx_pool_hashes_view ON pool_hashes(view)",
 		
-		// Pool owners
-		"CREATE INDEX IF NOT EXISTS idx_pool_owners_pool_update ON pool_owners(pool_update_hash)",
-		"CREATE INDEX IF NOT EXISTS idx_pool_owners_addr ON pool_owners(addr_hash)",
+		// Pool owners - using correct column names
+		"CREATE INDEX IF NOT EXISTS idx_pool_owners_update_tx ON pool_owners(update_tx_hash)",
+		"CREATE INDEX IF NOT EXISTS idx_pool_owners_owner ON pool_owners(owner_hash)",
 		
 		// Pool retirements
 		"CREATE INDEX IF NOT EXISTS idx_pool_retires_pool_hash ON pool_retires(pool_hash)",
@@ -159,13 +159,13 @@ func (uim *UnifiedIndexManager) createPerformanceIndexes() error {
 		"CREATE INDEX IF NOT EXISTS idx_ma_tx_outs_asset ON ma_tx_outs(policy, name)",
 		"CREATE INDEX IF NOT EXISTS idx_ma_tx_mints_asset ON ma_tx_mints(policy, name)",
 		
-		// Certificate indexes
-		"CREATE INDEX IF NOT EXISTS idx_certificates_tx_cert ON certificates(tx_hash, cert_index)",
-		"CREATE INDEX IF NOT EXISTS idx_certificates_type ON certificates(cert_type)",
+		// Certificate indexes - removed as certificates are stored in specific tables
+		// "CREATE INDEX IF NOT EXISTS idx_certificates_tx_cert ON certificates(tx_hash, cert_index)",
+		// "CREATE INDEX IF NOT EXISTS idx_certificates_type ON certificates(cert_type)",
 		
 		// Metadata indexes
 		"CREATE INDEX IF NOT EXISTS idx_tx_metadata_tx_hash ON tx_metadata(tx_hash)",
-		"CREATE INDEX IF NOT EXISTS idx_tx_metadata_key ON tx_metadata(key)",
+		"CREATE INDEX IF NOT EXISTS idx_tx_metadata_key ON tx_metadata(`key`)", // key is a reserved word
 		
 		// Script indexes
 		"CREATE INDEX IF NOT EXISTS idx_scripts_type ON scripts(type)",
@@ -219,7 +219,7 @@ func (uim *UnifiedIndexManager) AnalyzeTables() error {
 		"blocks", "txes", "tx_outs", "tx_ins",
 		"stake_addresses", "delegations", "pool_updates", "rewards",
 		"slot_leaders", "pool_hashes", "stake_registrations",
-		"certificates", "multi_assets", "ma_tx_outs", "ma_tx_mints",
+		"multi_assets", "ma_tx_outs", "ma_tx_mints",
 	}
 	
 	for _, table := range tables {

@@ -763,9 +763,16 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 		}
 		
 		if !existsInDB {
-			// Use raw SQL for better performance
-			if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, pool_hash, description) VALUES (?, ?, ?)", 
-				slotLeaderHash, nil, "Byron slot leader").Error; err != nil {
+			// Create slot leader using GORM
+			slotLeader := &models.SlotLeader{
+				Hash:        slotLeaderHash,
+				PoolHash:    nil,
+				Description: &[]string{"Byron slot leader"}[0],
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "hash"}},
+				DoNothing: true,
+			}).Create(slotLeader).Error; err != nil {
 				return nil, err
 			}
 		}
@@ -806,9 +813,16 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 	}
 	
 	if !existsInDB {
-		// Use raw SQL for better performance
-		if err := tx.Exec("INSERT IGNORE INTO slot_leaders (hash, pool_hash, description) VALUES (?, ?, ?)", 
-			slotLeaderHash, nil, nil).Error; err != nil {
+		// Create slot leader using GORM
+		slotLeader := &models.SlotLeader{
+			Hash:        slotLeaderHash,
+			PoolHash:    nil,
+			Description: nil,
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "hash"}},
+			DoNothing: true,
+		}).Create(slotLeader).Error; err != nil {
 			return nil, err
 		}
 	}
