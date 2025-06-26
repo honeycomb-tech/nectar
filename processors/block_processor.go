@@ -704,7 +704,7 @@ func (bp *BlockProcessor) processTransactionOutputs(ctx context.Context, tx *gor
 
 	// Use retry operation for transient errors
 	err := database.RetryOperation(func() error {
-		return tx.CreateInBatches(outputBatch, batchSize).Error
+		return database.FastCreateInBatches(tx, outputBatch, batchSize)
 	})
 	
 	if err != nil {
@@ -744,13 +744,13 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 			return cachedHash, nil
 		}
 
-		// Check if exists in database
-		var existsInDB bool
-		if err := tx.Raw("SELECT EXISTS(SELECT 1 FROM slot_leaders WHERE hash = ?)", slotLeaderHash).Scan(&existsInDB).Error; err != nil {
+		// Check if exists in database using optimized query
+		var count int64
+		if err := tx.Model(&models.SlotLeader{}).Where("hash = ?", slotLeaderHash).Count(&count).Error; err != nil {
 			return nil, err
 		}
 		
-		if !existsInDB {
+		if count == 0 {
 			// Create slot leader using fast insert
 			slotLeader := &models.SlotLeader{
 				Hash:        slotLeaderHash,
@@ -791,13 +791,13 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 		return cachedHash, nil
 	}
 
-	// Check if exists in database
-	var existsInDB bool
-	if err := tx.Raw("SELECT EXISTS(SELECT 1 FROM slot_leaders WHERE hash = ?)", slotLeaderHash).Scan(&existsInDB).Error; err != nil {
+	// Check if exists in database using optimized query
+	var count int64
+	if err := tx.Model(&models.SlotLeader{}).Where("hash = ?", slotLeaderHash).Count(&count).Error; err != nil {
 		return nil, err
 	}
 	
-	if !existsInDB {
+	if count == 0 {
 		// Create slot leader using fast insert
 		slotLeader := &models.SlotLeader{
 			Hash:        slotLeaderHash,

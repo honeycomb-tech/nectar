@@ -97,6 +97,11 @@ func InitTiDB() (*gorm.DB, error) {
 	sqlDB.SetConnMaxLifetime(30 * time.Minute) // Shorter lifetime to prevent stale connections
 	sqlDB.SetConnMaxIdleTime(10 * time.Minute) // Shorter idle time
 
+	// Ensure no transaction is active before setting session variables
+	if err := db.Exec("ROLLBACK").Error; err != nil {
+		// Ignore error - there might not be a transaction
+	}
+	
 	// Enable TiDB-specific optimizations
 	if err := enableTiDBOptimizations(db); err != nil {
 		log.Printf("Warning: failed to enable some TiDB optimizations: %v", err)
@@ -177,7 +182,7 @@ func enableTiDBOptimizations(db *gorm.DB) error {
 		"SET SESSION tidb_row_format_version = 2",
 
 		// Memory optimizations
-		"SET SESSION tidb_mem_quota_query = 17179869184", // 16GB per query
+		"SET SESSION tidb_mem_quota_query = 4294967296", // 4GB per query (reduced from 16GB)
 		"SET SESSION tidb_enable_chunk_rpc = ON",
 
 		// Parallel execution
@@ -218,8 +223,20 @@ func CheckDatabaseConnection(db *gorm.DB) error {
 		return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 	}
 
+	// First try a simple ping
 	if err := sqlDB.Ping(); err != nil {
 		return fmt.Errorf("database ping failed: %w", err)
+	}
+
+	// Also verify we can execute a simple query
+	var result int
+	if err := db.Raw("SELECT 1").Scan(&result).Error; err != nil {
+		return fmt.Errorf("health check query failed: %w", err)
+	}
+
+	// Ensure no transaction is stuck
+	if err := db.Exec("ROLLBACK").Error; err != nil {
+		// Ignore error - there might not be a transaction
 	}
 
 	return nil
@@ -366,6 +383,11 @@ func (cpm *ConnectionPoolManager) createConnection(workerID int) (*gorm.DB, erro
 	sqlDB.SetConnMaxLifetime(0) // Never expire (we manage lifecycle)
 	sqlDB.SetConnMaxIdleTime(0) // Never idle timeout
 
+	// Ensure no transaction is active before setting session variables
+	if err := db.Exec("ROLLBACK").Error; err != nil {
+		// Ignore error - there might not be a transaction
+	}
+	
 	// Enable TiDB-specific optimizations
 	if err := enableTiDBOptimizations(db); err != nil {
 		log.Printf("[WARNING] Worker %d: failed to enable some TiDB optimizations: %v", workerID, err)
