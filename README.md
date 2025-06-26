@@ -53,7 +53,7 @@ Create `nectar.toml`:
 ```toml
 [database]
 # Connect via HAProxy load balancer (port 4100) for high availability
-dsn = "root:50bcT*DaeU2-19@+Q4@tcp(localhost:4100)/nectar?charset=utf8mb4&parseTime=True&loc=Local"
+dsn = "root:<PASSWORD>@tcp(localhost:4100)/nectar?charset=utf8mb4&parseTime=True&loc=Local"
 
 [cardano]  
 node_socket = "/root/workspace/cardano-node-guild/socket/node.socket"
@@ -115,12 +115,12 @@ http://127.0.0.1:8404/stats
 ### Database Access
 ```bash
 # Connect via HAProxy (recommended)
-mysql -h 127.0.0.1 -P 4100 -u root -p'50bcT*DaeU2-19@+Q4' nectar
+mysql -h 127.0.0.1 -P 4100 -u root -p'<PASSWORD>' nectar
 
 # Direct TiDB connections (debugging only)
-mysql -h 127.0.0.1 -P 4000 -u root -p'50bcT*DaeU2-19@+Q4' nectar  # TiDB-1
-mysql -h 127.0.0.1 -P 4001 -u root -p'50bcT*DaeU2-19@+Q4' nectar  # TiDB-2
-mysql -h 127.0.0.1 -P 4002 -u root -p'50bcT*DaeU2-19@+Q4' nectar  # TiDB-3
+mysql -h 127.0.0.1 -P 4000 -u root -p'<PASSWORD>' nectar  # TiDB-1
+mysql -h 127.0.0.1 -P 4001 -u root -p'<PASSWORD>' nectar  # TiDB-2
+mysql -h 127.0.0.1 -P 4002 -u root -p'<PASSWORD>' nectar  # TiDB-3
 ```
 
 ## Roadmap
