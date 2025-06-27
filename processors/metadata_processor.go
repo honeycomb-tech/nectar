@@ -210,10 +210,7 @@ func (mp *MetadataProcessor) processScript(tx *gorm.DB, txHash []byte, script in
 
 // ValidateMetadata validates metadata according to Cardano rules
 func (mp *MetadataProcessor) ValidateMetadata(key uint64, value interface{}, blockType uint) error {
-	// Basic validation
-	if key > 0xFFFFFFFFFFFFFFFF {
-		return fmt.Errorf("metadata key too large: %d", key)
-	}
+	// Basic validation - key is already uint64 so no need to check max value
 
 	// Convert to JSON to check size
 	jsonBytes, err := json.Marshal(value)

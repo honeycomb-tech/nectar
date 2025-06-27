@@ -49,7 +49,7 @@ func (cp *CertificateProcessor) SetMetadataFetcher(fetcher MetadataFetcher) {
 // ProcessCertificates processes all certificates in a transaction (Shelley+)
 func (cp *CertificateProcessor) ProcessCertificates(ctx interface{}, tx *gorm.DB, txHash []byte, certificates []interface{}) error {
 	// Safety check for nil certificates
-	if certificates == nil || len(certificates) == 0 {
+	if len(certificates) == 0 {
 		return nil
 	}
 	

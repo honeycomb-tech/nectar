@@ -1119,7 +1119,7 @@ func (bp *BlockProcessor) getTransactionWithdrawals(tx ledger.Transaction, block
 
 	// Get withdrawals from transaction
 	withdrawals := tx.Withdrawals()
-	if withdrawals == nil || len(withdrawals) == 0 {
+	if len(withdrawals) == 0 {
 		return nil
 	}
 

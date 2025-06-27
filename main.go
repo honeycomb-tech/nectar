@@ -824,7 +824,12 @@ func NewReferenceAlignedIndexer(db *gorm.DB, cfg *config.Config) (*ReferenceAlig
 		// Initialize dashboard using factory
 		log.Println("[INFO] Creating dashboard...")
 		var dashboardErr error
-		indexer.dashboard, dashboardErr = dashboard.CreateDefaultDashboard()
+		indexer.dashboard, dashboardErr = dashboard.CreateDashboardWithAuth(
+			cfg.Auth.Enabled, 
+			cfg.Auth.Username, 
+			cfg.Auth.Password, 
+			cfg.Auth.Secret,
+		)
 		if dashboardErr != nil {
 			log.Printf("[WARNING] Failed to create dashboard: %v", dashboardErr)
 			indexer.dashboardEnabled.Store(false)

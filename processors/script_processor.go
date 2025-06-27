@@ -7,7 +7,6 @@ import (
 	"log"
 	unifiederrors "nectar/errors"
 	"nectar/models"
-	"sync"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/ledger"
@@ -24,17 +23,17 @@ type ScriptProcessor struct {
 	errorCollector *ErrorCollector
 }
 
-// ScriptCache manages script lookups
+// ScriptCache manages script lookups with LRU eviction
 type ScriptCache struct {
-	cache map[string]bool // Just track existence
-	mutex sync.RWMutex
+	cache *GenericLRUCache
 	db    *gorm.DB
 }
 
-// NewScriptCache creates a new script cache
+// NewScriptCache creates a new script cache with LRU eviction
 func NewScriptCache(db *gorm.DB) *ScriptCache {
+	// 100k entries should be enough for most scripts
 	return &ScriptCache{
-		cache: make(map[string]bool),
+		cache: NewGenericLRUCache(100000),
 		db:    db,
 	}
 }
@@ -44,21 +43,16 @@ func (sc *ScriptCache) EnsureScript(tx *gorm.DB, txHash []byte, scriptHash []byt
 	hashHex := hex.EncodeToString(scriptHash)
 
 	// Check cache first
-	sc.mutex.RLock()
-	if exists := sc.cache[hashHex]; exists {
-		sc.mutex.RUnlock()
+	if _, exists := sc.cache.Get(hashHex); exists {
 		return nil
 	}
-	sc.mutex.RUnlock()
 
 	// Check database
 	var script models.Script
 	result := tx.Where("hash = ?", scriptHash).First(&script)
 	if result.Error == nil {
 		// Found in database, cache it
-		sc.mutex.Lock()
-		sc.cache[hashHex] = true
-		sc.mutex.Unlock()
+		sc.cache.Put(hashHex, true)
 		return nil
 	}
 
@@ -82,9 +76,7 @@ func (sc *ScriptCache) EnsureScript(tx *gorm.DB, txHash []byte, scriptHash []byt
 	// Script saved successfully
 
 	// Cache existence
-	sc.mutex.Lock()
-	sc.cache[hashHex] = true
-	sc.mutex.Unlock()
+	sc.cache.Put(hashHex, true)
 
 	return nil
 }
@@ -134,17 +126,17 @@ func (sp *ScriptProcessor) ProcessInlineDatums(ctx context.Context, tx *gorm.DB,
 	return nil
 }
 
-// DatumCache manages datum lookups
+// DatumCache manages datum lookups with LRU eviction
 type DatumCache struct {
-	cache map[string]bool // Just track existence
-	mutex sync.RWMutex
+	cache *GenericLRUCache
 	db    *gorm.DB
 }
 
-// NewDatumCache creates a new datum cache
+// NewDatumCache creates a new datum cache with LRU eviction
 func NewDatumCache(db *gorm.DB) *DatumCache {
+	// 100k entries should be enough for most datums
 	return &DatumCache{
-		cache: make(map[string]bool),
+		cache: NewGenericLRUCache(100000),
 		db:    db,
 	}
 }
@@ -154,21 +146,16 @@ func (dc *DatumCache) EnsureDatum(tx *gorm.DB, txHash []byte, datumHash []byte, 
 	hashHex := hex.EncodeToString(datumHash)
 
 	// Check cache first
-	dc.mutex.RLock()
-	if exists := dc.cache[hashHex]; exists {
-		dc.mutex.RUnlock()
+	if _, exists := dc.cache.Get(hashHex); exists {
 		return nil
 	}
-	dc.mutex.RUnlock()
 
 	// Check database
 	var datum models.Datum
 	result := tx.Where("hash = ?", datumHash).First(&datum)
 	if result.Error == nil {
 		// Found in database, cache it
-		dc.mutex.Lock()
-		dc.cache[hashHex] = true
-		dc.mutex.Unlock()
+		dc.cache.Put(hashHex, true)
 		return nil
 	}
 
@@ -189,9 +176,7 @@ func (dc *DatumCache) EnsureDatum(tx *gorm.DB, txHash []byte, datumHash []byte, 
 	}
 
 	// Cache existence
-	dc.mutex.Lock()
-	dc.cache[hashHex] = true
-	dc.mutex.Unlock()
+	dc.cache.Put(hashHex, true)
 
 	return nil
 }
@@ -637,13 +622,8 @@ type ScriptStats struct {
 
 // ClearCache clears the script and datum caches
 func (sp *ScriptProcessor) ClearCache() {
-	sp.scriptCache.mutex.Lock()
-	sp.scriptCache.cache = make(map[string]bool)
-	sp.scriptCache.mutex.Unlock()
-
-	sp.datumCache.mutex.Lock()
-	sp.datumCache.cache = make(map[string]bool)
-	sp.datumCache.mutex.Unlock()
+	sp.scriptCache.cache.Clear()
+	sp.datumCache.cache.Clear()
 }
 
 // ProcessTransaction processes scripts and related data from a transaction

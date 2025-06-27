@@ -25,6 +25,13 @@ func NewWebDashboardAdapter(port int) (*WebDashboardAdapter, error) {
 	}, nil
 }
 
+// SetAuthConfig sets the authentication configuration
+func (w *WebDashboardAdapter) SetAuthConfig(enabled bool, username, password, secret string) {
+	if w.server != nil {
+		w.server.SetAuthConfig(enabled, username, password, secret)
+	}
+}
+
 // Start starts the web server
 func (w *WebDashboardAdapter) Start() error {
 	log.Println("[Dashboard] Starting web dashboard server...")

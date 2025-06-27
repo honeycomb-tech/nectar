@@ -23,6 +23,15 @@ type DashboardConfig struct {
 	Type        DashboardType
 	WebPort     int
 	DetailedLog bool
+	Auth        *AuthConfig
+}
+
+// AuthConfig holds authentication configuration
+type AuthConfig struct {
+	Enabled  bool
+	Username string
+	Password string
+	Secret   string
 }
 
 // GetDashboardConfig creates configuration from environment variables
@@ -78,7 +87,14 @@ func CreateDashboard(config *DashboardConfig) (Dashboard, error) {
 
 	case DashboardTypeWeb:
 		log.Printf("[Dashboard] Creating web-only dashboard on port %d", config.WebPort)
-		return NewWebDashboardAdapter(config.WebPort)
+		adapter, err := NewWebDashboardAdapter(config.WebPort)
+		if err != nil {
+			return nil, err
+		}
+		if config.Auth != nil {
+			adapter.SetAuthConfig(config.Auth.Enabled, config.Auth.Username, config.Auth.Password, config.Auth.Secret)
+		}
+		return adapter, nil
 
 	case DashboardTypeBoth:
 		log.Printf("[Dashboard] Creating both terminal and web dashboards (web port: %d)", config.WebPort)
@@ -90,6 +106,11 @@ func CreateDashboard(config *DashboardConfig) (Dashboard, error) {
 			// If web fails, fall back to terminal only
 			log.Printf("[Dashboard] Failed to create web dashboard: %v. Using terminal only.", err)
 			return terminal, nil
+		}
+		
+		// Set auth config on web dashboard
+		if config.Auth != nil {
+			web.SetAuthConfig(config.Auth.Enabled, config.Auth.Username, config.Auth.Password, config.Auth.Secret)
 		}
 		
 		// Return multi-dashboard
@@ -107,6 +128,18 @@ func CreateDashboard(config *DashboardConfig) (Dashboard, error) {
 // CreateDefaultDashboard creates a dashboard with default settings
 func CreateDefaultDashboard() (Dashboard, error) {
 	config := GetDashboardConfig()
+	return CreateDashboard(config)
+}
+
+// CreateDashboardWithAuth creates a dashboard with auth configuration
+func CreateDashboardWithAuth(authEnabled bool, username, password, secret string) (Dashboard, error) {
+	config := GetDashboardConfig()
+	config.Auth = &AuthConfig{
+		Enabled:  authEnabled,
+		Username: username,
+		Password: password,
+		Secret:   secret,
+	}
 	return CreateDashboard(config)
 }
 

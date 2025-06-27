@@ -35,15 +35,43 @@ type Config struct {
 // GetDefaultConfig returns default auth configuration
 func GetDefaultConfig() *Config {
 	return &Config{
-		Enabled:      true,
-		Username:     os.Getenv("NECTAR_AUTH_USERNAME"),
-		Password:     os.Getenv("NECTAR_AUTH_PASSWORD"),
-		JWTSecret:    os.Getenv("NECTAR_JWT_SECRET"),
+		Enabled:      false,
+		Username:     "admin",
+		Password:     "admin",
+		JWTSecret:    "nectar-secret-key",
 		TokenExpiry:  24 * time.Hour,
 		CookieName:   "nectar_token",
 		CookieDomain: "",
 		CookieSecure: false,
 	}
+}
+
+// NewConfigFromToml creates auth config from TOML config
+func NewConfigFromToml(enabled bool, username, password, secret string) *Config {
+	config := GetDefaultConfig()
+	config.Enabled = enabled
+	if username != "" {
+		config.Username = username
+	}
+	if password != "" {
+		config.Password = password
+	}
+	if secret != "" {
+		config.JWTSecret = secret
+	}
+	
+	// Still allow env vars to override
+	if envUser := os.Getenv("NECTAR_AUTH_USERNAME"); envUser != "" {
+		config.Username = envUser
+	}
+	if envPass := os.Getenv("NECTAR_AUTH_PASSWORD"); envPass != "" {
+		config.Password = envPass
+	}
+	if envSecret := os.Getenv("NECTAR_JWT_SECRET"); envSecret != "" {
+		config.JWTSecret = envSecret
+	}
+	
+	return config
 }
 
 // Claims represents JWT claims

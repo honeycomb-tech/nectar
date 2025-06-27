@@ -3,7 +3,6 @@ package processors
 import (
 	"fmt"
 	"nectar/models"
-	"sync"
 	"time"
 
 	"github.com/blinklabs-io/gouroboros/ledger"
@@ -11,18 +10,18 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// StakeAddressCache manages stake address lookups and creation
+// StakeAddressCache manages stake address lookups and creation with LRU eviction
 type StakeAddressCache struct {
 	db    *gorm.DB
-	cache map[string][]byte // Map from hex string to hash bytes
-	mutex sync.RWMutex
+	cache *GenericLRUCache // Map from hex string to hash bytes
 }
 
-// NewStakeAddressCache creates a new stake address cache
+// NewStakeAddressCache creates a new stake address cache with LRU eviction
 func NewStakeAddressCache(db *gorm.DB) *StakeAddressCache {
+	// 200k entries should be enough for most stake addresses
 	return &StakeAddressCache{
 		db:    db,
-		cache: make(map[string][]byte),
+		cache: NewGenericLRUCache(200000),
 	}
 }
 
@@ -51,12 +50,9 @@ func (sac *StakeAddressCache) GetOrCreateStakeAddressFromBytesWithTx(tx *gorm.DB
 
 	// Check cache first
 	cacheKey := fmt.Sprintf("%x", hashBytes)
-	sac.mutex.RLock()
-	if cachedHash, exists := sac.cache[cacheKey]; exists {
-		sac.mutex.RUnlock()
-		return cachedHash, nil
+	if cachedValue, exists := sac.cache.Get(cacheKey); exists {
+		return cachedValue.([]byte), nil
 	}
-	sac.mutex.RUnlock()
 
 	// Not in cache, check database
 	var stakeAddr models.StakeAddress
@@ -117,9 +113,7 @@ func (sac *StakeAddressCache) GetOrCreateStakeAddressFromBytesWithTx(tx *gorm.DB
 	}
 
 	// Update cache
-	sac.mutex.Lock()
-	sac.cache[cacheKey] = stakeAddr.HashRaw
-	sac.mutex.Unlock()
+	sac.cache.Put(cacheKey, stakeAddr.HashRaw)
 
 	return stakeAddr.HashRaw, nil
 }
@@ -150,12 +144,10 @@ func (sac *StakeAddressCache) PreloadCache() error {
 		}
 
 		// Add to cache
-		sac.mutex.Lock()
 		for _, addr := range batch {
 			cacheKey := fmt.Sprintf("%x", addr.HashRaw)
-			sac.cache[cacheKey] = addr.HashRaw
+			sac.cache.Put(cacheKey, addr.HashRaw)
 		}
-		sac.mutex.Unlock()
 
 		stakeAddresses = append(stakeAddresses, batch...)
 		offset += batchSize
@@ -170,14 +162,10 @@ func (sac *StakeAddressCache) PreloadCache() error {
 
 // ClearCache clears the in-memory cache
 func (sac *StakeAddressCache) ClearCache() {
-	sac.mutex.Lock()
-	defer sac.mutex.Unlock()
-	sac.cache = make(map[string][]byte)
+	sac.cache.Clear()
 }
 
 // GetCacheSize returns the current size of the cache
 func (sac *StakeAddressCache) GetCacheSize() int {
-	sac.mutex.RLock()
-	defer sac.mutex.RUnlock()
-	return len(sac.cache)
+	return sac.cache.Size()
 }

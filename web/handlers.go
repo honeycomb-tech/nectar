@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -209,5 +210,28 @@ func (h *DashboardHandlers) HandlePartialErrors(c *gin.Context) {
 	c.HTML(http.StatusOK, "partials/errors.html", gin.H{
 		"TotalErrors":  snapshot.TotalErrors,
 		"RecentErrors": recentErrors,
+	})
+}
+
+// HandleAPIMemory returns memory statistics
+func (h *DashboardHandlers) HandleAPIMemory(c *gin.Context) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	
+	c.JSON(http.StatusOK, gin.H{
+		"alloc":         m.Alloc / 1024 / 1024,        // MB
+		"totalAlloc":    m.TotalAlloc / 1024 / 1024,   // MB
+		"sys":           m.Sys / 1024 / 1024,          // MB
+		"numGC":         m.NumGC,
+		"goroutines":    runtime.NumGoroutine(),
+		"heapAlloc":     m.HeapAlloc / 1024 / 1024,    // MB
+		"heapSys":       m.HeapSys / 1024 / 1024,      // MB
+		"heapIdle":      m.HeapIdle / 1024 / 1024,     // MB
+		"heapInuse":     m.HeapInuse / 1024 / 1024,    // MB
+		"heapReleased":  m.HeapReleased / 1024 / 1024, // MB
+		"heapObjects":   m.HeapObjects,
+		"stackInuse":    m.StackInuse / 1024 / 1024,   // MB
+		"stackSys":      m.StackSys / 1024 / 1024,     // MB
+		"gcCPUFraction": m.GCCPUFraction,
 	})
 }

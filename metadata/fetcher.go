@@ -674,11 +674,16 @@ func (f *Fetcher) periodicScanner() {
 	defer f.wg.Done()
 	ticker := time.NewTicker(f.config.FetchInterval)
 	defer ticker.Stop()
+	
+	cleanupTicker := time.NewTicker(5 * time.Minute)
+	defer cleanupTicker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			f.scanUnfetchedMetadata()
+		case <-cleanupTicker.C:
+			f.cleanupProcessingMap()
 		case <-f.ctx.Done():
 			return
 		}
@@ -806,4 +811,19 @@ func hashToID(hash []byte) int64 {
 	}
 
 	return id
+}
+
+// cleanupProcessingMap removes stale entries from the processing map
+func (f *Fetcher) cleanupProcessingMap() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	
+	// Clear the entire processing map periodically
+	// This prevents memory leaks from URLs that never complete
+	oldSize := len(f.processing)
+	f.processing = make(map[string]bool)
+	
+	if oldSize > 0 {
+		log.Printf("[MetadataFetcher] Cleaned up %d stale processing entries", oldSize)
+	}
 }

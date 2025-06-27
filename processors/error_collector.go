@@ -116,8 +116,8 @@ func NewErrorCollector(maxErrors int, flushPeriod time.Duration) *ErrorCollector
 		ec.logFile = logFile
 	}
 
-	// Start periodic flush
-	go ec.periodicFlush()
+	// Start periodic flush and cleanup
+	go ec.periodicMaintenance()
 
 	return ec
 }
@@ -365,4 +365,41 @@ func (ec *ErrorCollector) GetErrorsBySeverity(severity ErrorSeverity) []Collecte
 	}
 
 	return errors
+}
+
+// periodicMaintenance runs periodic cleanup and flush operations
+func (ec *ErrorCollector) periodicMaintenance() {
+	ticker := time.NewTicker(ec.flushPeriod)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Flush errors to disk
+		ec.Flush()
+		
+		// Clean up old errors (older than 24 hours)
+		ec.cleanupOldErrors(24 * time.Hour)
+	}
+}
+
+// cleanupOldErrors removes errors older than the specified duration
+func (ec *ErrorCollector) cleanupOldErrors(maxAge time.Duration) {
+	ec.mutex.Lock()
+	defer ec.mutex.Unlock()
+
+	now := time.Now()
+	keysToDelete := []string{}
+
+	for key, err := range ec.errors {
+		if now.Sub(err.LastSeen) > maxAge {
+			keysToDelete = append(keysToDelete, key)
+		}
+	}
+
+	for _, key := range keysToDelete {
+		delete(ec.errors, key)
+	}
+
+	if len(keysToDelete) > 0 {
+		log.Printf("[ErrorCollector] Cleaned up %d old errors", len(keysToDelete))
+	}
 }

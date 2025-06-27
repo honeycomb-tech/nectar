@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,15 +47,8 @@ func NewServer(port int) (*Server, error) {
 	router := gin.New()
 	router.Use(gin.Recovery())
 	
-	// Initialize auth configuration
+	// Initialize auth configuration - will be set later via SetAuthConfig
 	authConfig := auth.GetDefaultConfig()
-	if authConfig.Username == "" || authConfig.Password == "" {
-		log.Println("[Web] WARNING: No authentication credentials set!")
-		log.Println("[Web] Set NECTAR_AUTH_USERNAME and NECTAR_AUTH_PASSWORD environment variables")
-		log.Println("[Web] Using default credentials: admin/admin")
-		authConfig.Username = "admin"
-		authConfig.Password = "admin"
-	}
 	
 	// Initialize JWT secret
 	if err := auth.InitJWTSecret(authConfig); err != nil {
@@ -217,6 +211,7 @@ func (s *Server) setupRoutes() {
 		api.GET("/performance", s.handlers.HandleAPIPerformance)
 		api.GET("/activities", s.handlers.HandleAPIActivities)
 		api.GET("/errors", s.handlers.HandleAPIErrors)
+		api.GET("/memory", s.handlers.HandleAPIMemory)
 	}
 	
 	// HTMX partials
@@ -347,6 +342,17 @@ func (s *Server) startUpdateBroadcaster() {
 			}
 		}
 	}()
+}
+
+// SetAuthConfig updates the authentication configuration
+func (s *Server) SetAuthConfig(enabled bool, username, password, secret string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	s.authConfig = auth.NewConfigFromToml(enabled, username, password, secret)
+	
+	// Re-initialize JWT secret with new config
+	auth.InitJWTSecret(s.authConfig)
 }
 
 // Update methods to be called from the indexer

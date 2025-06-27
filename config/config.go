@@ -19,6 +19,7 @@ type Config struct {
 	Monitoring  MonitoringConfig  `toml:"monitoring"`
 	Metadata    MetadataConfig    `toml:"metadata"`
 	StateQuery  StateQueryConfig  `toml:"state_query"`
+	Auth        AuthConfig        `toml:"auth"`
 }
 
 // DatabaseConfig holds database connection settings
@@ -105,6 +106,14 @@ type StateQueryConfig struct {
 	SocketPath string `toml:"socket_path"`
 }
 
+// AuthConfig holds authentication settings
+type AuthConfig struct {
+	Enabled  bool   `toml:"enabled"`
+	Username string `toml:"username"`
+	Password string `toml:"password"`
+	Secret   string `toml:"secret"`
+}
+
 // Load loads configuration from TOML file with environment variable overrides
 func Load(path string) (*Config, error) {
 	// Default configuration
@@ -156,6 +165,12 @@ func Load(path string) (*Config, error) {
 		StateQuery: StateQueryConfig{
 			Enabled:    true,
 			SocketPath: "", // Uses cardano.node_socket if empty
+		},
+		Auth: AuthConfig{
+			Enabled:  false,
+			Username: "admin",
+			Password: "admin",
+			Secret:   "nectar-secret-key",
 		},
 	}
 
