@@ -9,10 +9,12 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	ouroboros "github.com/blinklabs-io/gouroboros"
@@ -754,8 +756,26 @@ func main() {
 	// Note: stderr interception is now handled by the MySQL logger setup
 	// which routes MySQL errors through the unified error system
 
-	if err := indexer.Start(); err != nil {
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	
+	// Start the indexer in a goroutine
+	errChan := make(chan error, 1)
+	go func() {
+		if err := indexer.Start(); err != nil {
+			errChan <- err
+		}
+	}()
+	
+	// Wait for either an error or a shutdown signal
+	select {
+	case err := <-errChan:
 		log.Fatalf("Failed to start indexer: %v", err)
+	case sig := <-sigChan:
+		log.Printf("Received signal %v, shutting down gracefully...", sig)
+		indexer.Shutdown()
+		os.Exit(0)
 	}
 }
 

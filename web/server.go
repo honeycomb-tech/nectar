@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"nectar/auth"
 )
 
 //go:embed templates/* templates/partials/*
@@ -32,6 +33,7 @@ type Server struct {
 	isRunning    bool
 	port         int
 	updateTicker *time.Ticker
+	authConfig   *auth.Config
 }
 
 // NewServer creates a new web dashboard server
@@ -43,6 +45,21 @@ func NewServer(port int) (*Server, error) {
 
 	router := gin.New()
 	router.Use(gin.Recovery())
+	
+	// Initialize auth configuration
+	authConfig := auth.GetDefaultConfig()
+	if authConfig.Username == "" || authConfig.Password == "" {
+		log.Println("[Web] WARNING: No authentication credentials set!")
+		log.Println("[Web] Set NECTAR_AUTH_USERNAME and NECTAR_AUTH_PASSWORD environment variables")
+		log.Println("[Web] Using default credentials: admin/admin")
+		authConfig.Username = "admin"
+		authConfig.Password = "admin"
+	}
+	
+	// Initialize JWT secret
+	if err := auth.InitJWTSecret(authConfig); err != nil {
+		return nil, fmt.Errorf("failed to initialize JWT secret: %v", err)
+	}
 	
 	// Add simple request logging
 	router.Use(func(c *gin.Context) {
@@ -74,11 +91,12 @@ func NewServer(port int) (*Server, error) {
 	handlers := NewDashboardHandlers(data)
 
 	server := &Server{
-		router:   router,
-		data:     data,
-		wsHub:    wsHub,
-		handlers: handlers,
-		port:     port,
+		router:     router,
+		data:       data,
+		wsHub:      wsHub,
+		handlers:   handlers,
+		port:       port,
+		authConfig: authConfig,
 	}
 
 	// Load templates
@@ -129,6 +147,12 @@ func (s *Server) loadTemplates() error {
 		indexPath := filepath.Join(templateDir, "index.html")
 		tmpl = template.Must(tmpl.New("index.html").ParseFiles(indexPath))
 		
+		// Load login template
+		loginPath := filepath.Join(templateDir, "login.html")
+		if _, err := os.Stat(loginPath); err == nil {
+			tmpl = template.Must(tmpl.New("login.html").ParseFiles(loginPath))
+		}
+		
 		// Load partial templates with their proper names
 		partialFiles := []struct {
 			name string
@@ -169,11 +193,24 @@ func (s *Server) setupRoutes() {
 	// Static files
 	s.router.Static("/static", "./static")
 	
+	// Login page (no auth required)
+	s.router.GET("/login", func(c *gin.Context) {
+		c.HTML(http.StatusOK, "login.html", nil)
+	})
+	
+	// Login/logout API endpoints (no auth required)
+	s.router.POST("/api/login", auth.LoginHandler(s.authConfig))
+	s.router.POST("/api/logout", auth.LogoutHandler(s.authConfig))
+	
+	// Apply auth middleware to all other routes
+	authGroup := s.router.Group("/")
+	authGroup.Use(auth.BasicAuth(s.authConfig))
+	
 	// Main page
-	s.router.GET("/", s.handlers.HandleIndex)
+	authGroup.GET("/", s.handlers.HandleIndex)
 	
 	// API endpoints
-	api := s.router.Group("/api")
+	api := authGroup.Group("/api")
 	{
 		api.GET("/status", s.handlers.HandleAPIStatus)
 		api.GET("/eras", s.handlers.HandleAPIEras)
@@ -183,7 +220,7 @@ func (s *Server) setupRoutes() {
 	}
 	
 	// HTMX partials
-	partials := s.router.Group("/partials")
+	partials := authGroup.Group("/partials")
 	{
 		partials.GET("/status", s.handlers.HandlePartialStatus)
 		partials.GET("/eras", s.handlers.HandlePartialEras)
@@ -191,8 +228,8 @@ func (s *Server) setupRoutes() {
 		partials.GET("/errors", s.handlers.HandlePartialErrors)
 	}
 	
-	// WebSocket endpoint
-	s.router.GET("/ws", HandleWebSocket(s.wsHub))
+	// WebSocket endpoint (requires auth)
+	authGroup.GET("/ws", HandleWebSocket(s.wsHub))
 	
 	// Health check
 	s.router.GET("/health", func(c *gin.Context) {
