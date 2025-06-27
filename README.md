@@ -1,56 +1,35 @@
 # Nectar
 
-> ⚠️ **UNDER HEAVY DEVELOPMENT** - This project is actively being developed and is not yet production-ready. Contributions are welcome! Feel free to open issues or submit PRs.
+> ⚠️ **UNDER HEAVY DEVELOPMENT** - Currently syncing Mary era. Not production-ready.
 
-High-performance Cardano blockchain indexer optimized for TiDB's distributed architecture.
+Cardano blockchain indexer built for TiDB's distributed architecture.
 
-## Overview
+## Why TiDB for Cardano?
 
-Nectar is a specialized Cardano indexer that leverages TiDB's distributed SQL capabilities to achieve linear scaling. Unlike traditional single-node indexers, Nectar can scale horizontally by adding more TiKV nodes, eliminating I/O bottlenecks that plague monolithic database architectures.
+The real power isn't the indexer - it's what TiDB enables:
 
-## Current Status & Achievements
+- **Linear Scaling**: Add more TiKV nodes = proportionally faster queries and writes
+- **No I/O Bottlenecks**: Distributed storage eliminates single-disk constraints  
+- **Built-in Sharding**: Data automatically distributed by primary keys
+- **MySQL Compatible**: Use standard SQL tools and libraries
+- **HTAP Capabilities**: TiFlash enables real-time analytics on blockchain data
 
-### ✅ What's Working
-- **High-Performance Indexing**: Successfully indexing Cardano blockchain with optimized TiDB backend
-- **Byron Era Support**: Complete support for Byron era blocks (1.5M+ blocks indexed)
-- **Multi-Era Architecture**: Supports Byron, Shelley, Allegra, Mary, Alonzo, Babbage, and Conway eras
-- **Optimized Queries**: Fast inserts with INSERT IGNORE pattern using GORM
-- **Connection Pool Management**: Robust connection handling with automatic recovery
-- **Real-time Dashboard**: Web and terminal dashboards for monitoring sync progress
-- **Memory Optimizations**: Reduced memory footprint by 50% through configuration tuning
+## Current Sync Status
 
-### 🚧 In Development
-- **Shelley+ Era Processing**: Implementing stake pools, delegations, and rewards
-- **Certificate Processing**: Working on stake registrations and pool operations
-- **Governance Features**: Conway era governance actions and voting
-- **API Layer**: RESTful API for querying blockchain data
-- **Performance Tuning**: Further optimizations for 100K+ TPS
+- **Byron Era**: ✅ Complete (4.5M blocks)
+- **Shelley Era**: ✅ Complete (12M blocks)
+- **Allegra Era**: ✅ Complete (6.5M blocks)
+- **Mary Era**: 🔄 In Progress (currently at block 5.2M)
+- **Total Indexed**: 5.2M+ blocks, 8M+ transactions
 
-### 📊 Performance Metrics
-- **Byron Era**: 1.5M+ blocks indexed
-- **Insert Speed**: Sub-10ms inserts (improved from 1000ms+)
-- **Memory Usage**: Optimized from 128 to 64 connections
-- **Worker Efficiency**: 24 parallel workers processing blocks
+## What Nectar Does
 
-## Why TiDB?
+Nectar is simply a bridge that:
+1. Connects to your Cardano node via local socket
+2. Reads blocks using the Ouroboros protocol
+3. Writes the data to TiDB
 
-Traditional Cardano indexers hit a wall with single-node databases:
-- PostgreSQL: I/O bound at ~30-40 blocks/second
-- MySQL: Similar limitations with large datasets
-- SQLite: Not suitable for production scale
-
-TiDB solves these problems:
-- **Horizontal Scaling**: Add TiKV nodes for linear performance gains
-- **Distributed Storage**: Data automatically sharded across nodes
-- **Parallel Query Execution**: Queries scale with cluster size
-- **No Single Point of Failure**: Built-in high availability
-
-## Performance Metrics
-
-- **Byron Era**: 50-100 blocks/second (current sync rate)
-- **Shelley-Mary**: 40-80 blocks/second (staking complexity)
-- **Alonzo-Babbage**: 20-50 blocks/second (smart contracts)
-- **Peak Performance**: 100+ blocks/second with optimized settings
+The magic happens in TiDB - not the indexer.
 
 ## Requirements
 
@@ -89,20 +68,12 @@ bulk_fetch_range_size = 20000
 ./nectar
 ```
 
-## Architecture
+## Features
 
-### Design Principles
-- **Node-to-Client Protocol**: Direct connection to Cardano node's UNIX socket
-- **Parallel Processing**: Multiple workers process blocks concurrently
-- **Batch Operations**: Optimized for TiDB's distributed architecture
-- **Hash-Based Sharding**: Transaction and block hashes ensure even distribution
-- **Modular Processors**: Separate handlers for each data type (blocks, transactions, certificates, etc.)
-
-### Key Features
 - **Web Dashboard**: Real-time monitoring at http://localhost:8080
-- **Error Monitoring**: Comprehensive error tracking and filtering
-- **Performance Metrics**: Detailed statistics on sync progress
 - **Automatic Resume**: Picks up from last processed block after restart
+- **Era-Aware Processing**: Automatically adjusts batch sizes per era
+- **Error Filtering**: Ignores non-critical TiDB retry errors
 
 ## Known Issues
 
@@ -141,10 +112,9 @@ mysql -h 127.0.0.1 -P 4001 -u root -p'<PASSWORD>' nectar  # TiDB-2
 mysql -h 127.0.0.1 -P 4002 -u root -p'<PASSWORD>' nectar  # TiDB-3
 ```
 
-## Roadmap
+## Next Steps
 
-- [ ] TiDB Serverless support with SSL/TLS
-- [ ] Selective sync (start from specific slot/era)
-- [ ] Configurable processors (disable unwanted data types)
-- [ ] Multi-instance coordination for parallel syncing
-- [ ] Production deployment guides
+- Complete initial sync to chain tip
+- Enable metadata fetching
+- Add TiFlash replicas for analytics
+- Build query APIs on top of TiDB
