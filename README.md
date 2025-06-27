@@ -12,7 +12,17 @@ Nectar indexes Cardano blockchain data into TiDB, making it queryable via SQL. I
 
 ## Why TiDB?
 
-TiDB provides horizontal scalability through its distributed architecture. Unlike traditional single-node databases, TiDB can scale by adding more TiKV nodes, making it suitable for blockchain data that grows continuously.
+TiDB offers unique advantages for blockchain data:
+
+- **High Availability**: No single point of failure. TiKV nodes replicate data across the cluster with Raft consensus
+- **Auto-Sharding**: Data automatically distributed across nodes without manual partitioning
+- **TiFlash**: Columnar storage engine for analytical queries on historical blockchain data
+- **HTAP**: Hybrid transactional/analytical processing - index new blocks while running complex analytics
+- **Compressed Storage**: TiKV's RocksDB backend efficiently compresses blockchain data
+- **Online DDL**: Schema changes without downtime as the blockchain evolves
+- **Horizontal Scaling**: Add nodes to handle growing blockchain data without re-architecting
+
+Traditional databases require complex sharding schemes or struggle with the continuous growth of blockchain data. TiDB handles this transparently.
 
 ## Current Status
 
