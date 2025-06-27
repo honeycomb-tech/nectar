@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +23,7 @@ import (
 
 	"nectar/config"
 	"nectar/connection"
+	"nectar/constants"
 	"nectar/dashboard"
 	"nectar/database"
 	"nectar/errors"
@@ -73,7 +73,11 @@ func getIntEnv(key string, defaultValue int) int {
 // getBoolEnv gets a boolean from environment or returns default
 func getBoolEnv(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
-		boolValue, _ := strconv.ParseBool(value)
+		boolValue, err := strconv.ParseBool(value)
+		if err != nil {
+			log.Printf("Warning: Invalid boolean value for %s: %s, using default: %v", key, value, defaultValue)
+			return defaultValue
+		}
 		return boolValue
 	}
 	return defaultValue
@@ -252,6 +256,10 @@ type ReferenceAlignedIndexer struct {
 
 	// Dashboard interface - supports multiple dashboard types
 	dashboard dashboard.Dashboard
+	dashboardErrorChan chan struct{
+		errorType string
+		message   string
+	}
 	
 	// Era tracking for dynamic configuration
 	currentEpoch      atomic.Uint64
@@ -811,16 +819,23 @@ func NewReferenceAlignedIndexer(db *gorm.DB, cfg *config.Config) (*ReferenceAlig
 	// Connect unified error system to dashboard
 	// Set up unified error system callback - errors will appear in ERROR MONITOR section
 	// Create a buffered channel for dashboard errors to prevent blocking
-	dashboardErrorChan := make(chan struct{
+	indexer.dashboardErrorChan = make(chan struct{
 		errorType string
 		message   string
 	}, 1000)
 	
 	// Start a goroutine to process dashboard errors sequentially
 	go func() {
-		for err := range dashboardErrorChan {
-			// Forward the actual error to the dashboard
-			if indexer.dashboard != nil {
+		for {
+			select {
+			case <-indexer.ctx.Done():
+				return
+			case err, ok := <-indexer.dashboardErrorChan:
+				if !ok {
+					return
+				}
+				// Forward the actual error to the dashboard
+				if indexer.dashboard != nil {
 				// Parse the message to extract component and operation if possible
 				parts := strings.SplitN(err.message, ":", 2)
 				component := "System"
@@ -835,8 +850,9 @@ func NewReferenceAlignedIndexer(db *gorm.DB, cfg *config.Config) (*ReferenceAlig
 					}
 				}
 				
-				// Forward to dashboard with proper type
-				indexer.dashboard.AddError(err.errorType, component, message)
+					// Forward to dashboard with proper type
+					indexer.dashboard.AddError(err.errorType, component, message)
+				}
 			}
 		}
 	}()
@@ -844,7 +860,7 @@ func NewReferenceAlignedIndexer(db *gorm.DB, cfg *config.Config) (*ReferenceAlig
 	errors.Get().SetDashboardCallback(func(errorType, message string) {
 		// Non-blocking send to channel
 		select {
-		case dashboardErrorChan <- struct{
+		case indexer.dashboardErrorChan <- struct{
 			errorType string
 			message   string
 		}{errorType, message}:
@@ -1002,7 +1018,11 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 	if rai.stateQueryService != nil {
 		go func() {
 			// Wait a bit to let sync establish what era we're in
-			time.Sleep(30 * time.Second)
+			select {
+			case <-rai.ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+			}
 
 			// Check if we're still in Byron
 			var currentSlot uint64
@@ -1010,7 +1030,7 @@ func (rai *ReferenceAlignedIndexer) Start() error {
 				rai.dbConnections[0].GetDB().Model(&models.Block{}).Select("MAX(slot_no)").Scan(&currentSlot)
 			}
 
-			if currentSlot < 4492800 { // Byron ends at slot 4492799
+			if currentSlot <= constants.ByronEraEndSlot {
 				rai.logToActivity("system", "Delaying state query service start until after Byron era")
 				return
 			}
@@ -1100,6 +1120,11 @@ func (rai *ReferenceAlignedIndexer) Stop() error {
 
 	// Cancel context
 	rai.cancel()
+
+	// Close dashboard error channel
+	if rai.dashboardErrorChan != nil {
+		close(rai.dashboardErrorChan)
+	}
 
 	// Close block queue to signal workers to stop
 	if rai.blockQueue != nil {
@@ -1581,265 +1606,13 @@ func (rai *ReferenceAlignedIndexer) updateStats() {
 
 
 // makeRaw puts the terminal into raw mode and returns the previous state
-func makeRaw() (*terminalState, error) {
-	cmd := exec.Command("stty", "-g")
-	cmd.Stdin = os.Stdin
-	oldStateBytes, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	
-	oldState := &terminalState{
-		state: strings.TrimSpace(string(oldStateBytes)),
-	}
-	
-	// Set raw mode
-	cmd = exec.Command("stty", "raw", "-echo", "cbreak")
-	cmd.Stdin = os.Stdin
-	return oldState, cmd.Run()
-}
 
 // restoreTerminal restores the terminal to its previous state
-func restoreTerminal(oldState *terminalState) {
-	if oldState != nil {
-		cmd := exec.Command("stty", oldState.state)
-		cmd.Stdin = os.Stdin
-		cmd.Run()
-	}
-}
 
 // terminalState holds the terminal state for restoration
-type terminalState struct {
-	state string
-}
 
-func (rai *ReferenceAlignedIndexer) renderDashboard() {
-	// DISABLED - Using Bubble Tea dashboard now
-	// The Bubble Tea dashboard has its own render loop
-}
 
 // prepareDashboardData is deprecated - replaced by direct dashboard updates
-/*
-func (rai *ReferenceAlignedIndexer) prepareDashboardData() *dashboard.DashboardData {
-	// Use cached stats for display - read with mutex
-	rai.stats.mutex.RLock()
-	currentRate := rai.stats.currentBlocksPerSec
-	peakRate := rai.stats.peakBlocksPerSec
-	dbBlockCount := rai.stats.cachedBlockCount
-	currentSlot := rai.stats.cachedSlot
-	tipSlot := rai.stats.cachedTipSlot
-	tipDistance := rai.stats.cachedTipDistance
-	rai.stats.mutex.RUnlock()
-
-	// If we haven't cached values yet, use real-time (for initial display)
-	if dbBlockCount == 0 {
-		dbBlockCount = atomic.LoadInt64(&rai.stats.blocksProcessed)
-		currentSlot = rai.lastProcessedSlot.Load()
-		tipSlot = rai.tipSlot.Load()
-		if tipSlot > 0 && currentSlot > 0 {
-			tipDistance = tipSlot - currentSlot
-		}
-	}
-
-	// Get queue metrics
-	queueDepth := len(rai.blockQueue)
-	activeWorkers := rai.activeWorkers.Load()
-
-	// Calculate era progress (only when slot changes)
-	data := &dashboard.DashboardData{
-		CurrentRate:   currentRate,
-		PeakRate:      peakRate,
-		BlockCount:    dbBlockCount,
-		CurrentSlot:   currentSlot,
-		Runtime:       rai.formatDuration(time.Since(rai.stats.startTime)),
-		MemoryUsage:   rai.getMemoryUsage(),
-		CPUUsage:      rai.getCPUUsage(),
-		TipSlot:       tipSlot,
-		TipDistance:   tipDistance,
-		QueueDepth:    queueDepth,
-		ActiveWorkers: activeWorkers,
-		TotalWorkers:  rai.blockWorkers,
-	}
-
-	// Calculate era progress
-	rai.calculateEraProgress(data, currentSlot)
-
-	// Get activities
-	data.Activities = rai.getRecentActivities()
-
-	// Get errors
-	data.TotalErrors, data.RecentErrors = rai.getErrorData()
-
-	return data
-}
-
-func (rai *ReferenceAlignedIndexer) calculateEraProgress(data *dashboard.DashboardData, currentSlot uint64) {
-	// Byron
-	if currentSlot >= 4492800 {
-		data.ByronProgress = 100.0
-	} else {
-		data.ByronProgress = (float64(currentSlot) / 4492799.0) * 100
-	}
-
-	// Shelley
-	if currentSlot >= 16588738 {
-		data.ShelleyProgress = 100.0
-	} else if currentSlot >= 4492800 {
-		data.ShelleyProgress = ((float64(currentSlot) - 4492800) / (16588738 - 4492800)) * 100
-	}
-
-	// Allegra
-	if currentSlot >= 23068794 {
-		data.AllegraProgress = 100.0
-	} else if currentSlot >= 16588738 {
-		data.AllegraProgress = ((float64(currentSlot) - 16588738) / (23068794 - 16588738)) * 100
-	}
-
-	// Mary
-	if currentSlot >= 39916797 {
-		data.MaryProgress = 100.0
-	} else if currentSlot >= 23068794 {
-		data.MaryProgress = ((float64(currentSlot) - 23068794) / (39916797 - 23068794)) * 100
-	}
-
-	// Alonzo
-	if currentSlot >= 72316797 {
-		data.AlonzoProgress = 100.0
-	} else if currentSlot >= 39916797 {
-		data.AlonzoProgress = ((float64(currentSlot) - 39916797) / (72316797 - 39916797)) * 100
-	}
-
-	// Babbage
-	if currentSlot >= 133660800 {
-		data.BabbageProgress = 100.0
-	} else if currentSlot >= 72316797 {
-		data.BabbageProgress = ((float64(currentSlot) - 72316797) / (133660800 - 72316797)) * 100
-	}
-
-	// Conway
-	if currentSlot >= 133660800 {
-		data.ConwayProgress = 5.0 // Early stage
-	}
-
-	// Determine current era
-	if currentSlot >= 133660800 {
-		data.CurrentEra = "Conway"
-		data.EraProgress = data.ConwayProgress
-	} else if currentSlot >= 72316797 {
-		data.CurrentEra = "Babbage"
-		data.EraProgress = data.BabbageProgress
-	} else if currentSlot >= 39916797 {
-		data.CurrentEra = "Alonzo"
-		data.EraProgress = data.AlonzoProgress
-	} else if currentSlot >= 23068794 {
-		data.CurrentEra = "Mary"
-		data.EraProgress = data.MaryProgress
-	} else if currentSlot >= 16588738 {
-		data.CurrentEra = "Allegra"
-		data.EraProgress = data.AllegraProgress
-	} else if currentSlot >= 4492800 {
-		data.CurrentEra = "Shelley"
-		data.EraProgress = data.ShelleyProgress
-	} else {
-		data.CurrentEra = "Byron"
-		data.EraProgress = data.ByronProgress
-	}
-
-	// Add bulk sync indicator
-	if rai.isBulkSync.Load() {
-		data.CurrentEra = data.CurrentEra + " [BULK SYNC]"
-	}
-}
-
-func (rai *ReferenceAlignedIndexer) getRecentActivities() []dashboard.ActivityData {
-	rai.activityFeed.mutex.RLock()
-	defer rai.activityFeed.mutex.RUnlock()
-
-	var activities []dashboard.ActivityData
-	for _, entry := range rai.activityFeed.entries {
-		prefix := "[INFO]"
-		switch entry.Type {
-		case "block":
-			prefix = "[BLOCK]"
-		case "batch":
-			prefix = "[BATCH]"
-		case "sync":
-			prefix = "[SYNC]"
-		case "system":
-			prefix = "[SYSTEM]"
-		case "era":
-			prefix = "[ERA]"
-		case "rollback":
-			prefix = "[ROLLBACK]"
-		case "error":
-			prefix = "[ERROR]"
-		}
-
-		message := entry.Message
-		maxLen := 45 - len(prefix) - 1
-		if len(message) > maxLen {
-			message = message[:maxLen-3] + "..."
-		}
-
-		activities = append(activities, dashboard.ActivityData{
-			Time:    entry.Timestamp.Format("15:04:05"),
-			Type:    prefix,
-			Message: message,
-		})
-	}
-
-	return activities
-}
-
-func (rai *ReferenceAlignedIndexer) getErrorData() (int64, []dashboard.ErrorData) {
-	// Get errors from the unified error system
-	unifiedSystem := errors.Get()
-	stats := unifiedSystem.GetStatistics()
-	
-	totalErrors := stats["total_errors"].(int64)
-	
-	// If dashboard error handler is available, use it for better organization
-	if rai.dashboardErrorHandler != nil {
-		dashboardErrors := rai.dashboardErrorHandler.GetDashboardErrors(5)
-		return totalErrors, dashboardErrors
-	}
-	
-	// Fallback to unified system errors
-	recentErrors := unifiedSystem.GetRecentErrors(5)
-	
-	var errors []dashboard.ErrorData
-	maxDisplay := 5
-	displayCount := 0
-	
-	// Filter out duplicate key errors at display time as additional safety
-	for _, err := range recentErrors {
-		// Skip duplicate key errors even if they somehow made it through
-		if strings.Contains(err.Message, "Error 1062") || 
-		   strings.Contains(err.Message, "Duplicate entry") ||
-		   strings.Contains(err.Message, "duplicate key") {
-			continue
-		}
-		
-		message := fmt.Sprintf("%s.%s: %s", err.Component, err.Operation, err.Message)
-		if len(message) > 50 {
-			message = message[:47] + "..."
-		}
-
-		errors = append(errors, dashboard.ErrorData{
-			Time:    err.Timestamp.Format("15:04:05"),
-			Count:   int(err.Count),
-			Message: message,
-		})
-		
-		displayCount++
-		if displayCount >= maxDisplay {
-			break
-		}
-	}
-
-	return totalErrors, errors
-}
-*/
 
 // dashboardUpdateLoop periodically updates the termdash dashboard with fresh data
 func (rai *ReferenceAlignedIndexer) dashboardUpdateLoop() {
@@ -1906,10 +1679,10 @@ func (rai *ReferenceAlignedIndexer) updateEraProgress(currentSlot uint64) {
 
 	// Byron
 	byronProgress := 0.0
-	if currentSlot >= 4492800 {
+	if currentSlot > constants.ByronEraEndSlot {
 		byronProgress = 100.0
 	} else {
-		byronProgress = (float64(currentSlot) / 4492799.0) * 100
+		byronProgress = (float64(currentSlot) / float64(constants.ByronEraEndSlot)) * 100
 	}
 	rai.dashboard.UpdateEraProgress("Byron", byronProgress)
 

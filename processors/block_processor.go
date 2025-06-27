@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"nectar/constants"
 	"nectar/database"
 	unifiederrors "nectar/errors"
 	"nectar/models"
@@ -51,7 +52,7 @@ type BlockProcessor struct {
 	epochParamsProvider  *EpochParamsProvider
 	stateQueryService    StateQueryService
 	txSemaphore          chan struct{} // Limits concurrent transaction processing
-	slotLeaderCache      map[string][]byte // Cache slot leader hashes to avoid DB lookups
+	slotLeaderCache      *LRUCache  // LRU cache for slot leader hashes
 	currentEraConfig     *EraConfig // Current era configuration
 	currentEpoch         uint64     // Track current epoch for era detection
 }
@@ -72,7 +73,7 @@ func NewBlockProcessor(db *gorm.DB) *BlockProcessor {
 		adaPotsCalculator:    NewAdaPotsCalculator(db),
 		epochParamsProvider:  NewEpochParamsProvider(db),
 		txSemaphore:          make(chan struct{}, 32), // Increased to 32 for our powerful system
-		slotLeaderCache:      make(map[string][]byte),
+		slotLeaderCache:      NewLRUCache(constants.CacheMaxEntries),
 		currentEraConfig:     GetEraConfig(0), // Start with Byron config
 		currentEpoch:         0,
 	}
@@ -97,7 +98,7 @@ func (bp *BlockProcessor) ProcessBlock(ctx context.Context, block ledger.Block, 
 	
 	// Special handling for Byron-Shelley boundary
 	if slotNumber >= 4492800 && slotNumber <= 4493000 {
-		log.Printf("[BYRON-SHELLEY] Processing boundary block at slot %d (type %d)", slotNumber, blockType)
+		// Processing boundary block
 		
 		// Add extra debugging for the problematic slot
 		if slotNumber == 4492900 {
@@ -245,12 +246,7 @@ func (bp *BlockProcessor) processEraAwareTransactions(ctx context.Context, db *g
 	// Each transaction still gets its own DB transaction for atomicity
 	for idx, tx := range transactions {
 		// Special debugging for Byron-Shelley boundary transactions
-		if blockNumber >= 4492800 && blockNumber <= 4493000 {
-			if idx == 0 || (idx > 0 && idx % 10 == 0) || idx == len(transactions)-1 {
-				log.Printf("[BYRON-SHELLEY] Processing transaction %d/%d at block %d", 
-					idx+1, len(transactions), blockNumber)
-			}
-		}
+		// Skip verbose logging for boundary blocks
 		
 		// Log slow transactions
 		txStartTime := time.Now()
@@ -737,7 +733,8 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 		
 		// Check cache first
 		cacheKey := fmt.Sprintf("%x", slotLeaderHash)
-		if cachedHash, exists := bp.slotLeaderCache[cacheKey]; exists {
+		cachedHash, exists := bp.slotLeaderCache.Get(cacheKey)
+		if exists {
 			return cachedHash, nil
 		}
 
@@ -760,7 +757,7 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 		}
 		
 		// Cache the result
-		bp.slotLeaderCache[cacheKey] = slotLeaderHash
+		bp.slotLeaderCache.Put(cacheKey, slotLeaderHash)
 		return slotLeaderHash, nil
 	}
 
@@ -784,7 +781,8 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 	
 	// Check cache first
 	cacheKey := fmt.Sprintf("%x", slotLeaderHash)
-	if cachedHash, exists := bp.slotLeaderCache[cacheKey]; exists {
+	cachedHash, exists := bp.slotLeaderCache.Get(cacheKey)
+	if exists {
 		return cachedHash, nil
 	}
 
@@ -807,17 +805,14 @@ func (bp *BlockProcessor) getOrCreateSlotLeader(tx *gorm.DB, block ledger.Block,
 	}
 	
 	// Cache the result
-	bp.slotLeaderCache[cacheKey] = slotLeaderHash
+	bp.slotLeaderCache.Put(cacheKey, slotLeaderHash)
 	return slotLeaderHash, nil
 }
 
 // Helper functions remain largely the same but work with hashes instead of IDs
 func (bp *BlockProcessor) getEpochForSlot(slot uint64, blockType uint) uint32 {
 	// Special handling for Byron-Shelley boundary
-	// Byron ends at slot 4492799 (epoch 207)
-	// Shelley starts at slot 4492800 (epoch 208)
-	if slot == 4492800 {
-		log.Printf("[BYRON-SHELLEY] Transition slot %d is epoch 208 (first Shelley epoch)", slot)
+	if slot == constants.ByronEraEndSlot+1 {
 		return 208
 	}
 	
@@ -852,7 +847,6 @@ func (bp *BlockProcessor) getBlockTime(slot uint64, blockType uint) time.Time {
 	// Special handling for Byron-Shelley boundary
 	// The transition happens at slot 4492800
 	if slot == 4492800 {
-		log.Printf("[BYRON-SHELLEY] Transition slot %d - Using Shelley start time", slot)
 		return shelleyStart
 	}
 

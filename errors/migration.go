@@ -1,7 +1,6 @@
 package errors
 
 import (
-	"fmt"
 	"log"
 	"strings"
 )
@@ -132,15 +131,4 @@ func ConvertProcessorError(component, operation string, err error) {
 	}
 }
 
-// WrapError wraps an error with component context and logs it
-func WrapError(component, operation string, err error) error {
-	if err == nil {
-		return nil
-	}
 
-	// Log to unified system
-	ConvertProcessorError(component, operation, err)
-
-	// Return wrapped error
-	return fmt.Errorf("%s.%s: %w", component, operation, err)
-}

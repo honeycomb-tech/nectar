@@ -79,7 +79,7 @@ func (sc *ScriptCache) EnsureScript(tx *gorm.DB, txHash []byte, scriptHash []byt
 		return fmt.Errorf("failed to create script: %w", err)
 	}
 	
-	log.Printf("[DEBUG] Successfully saved %s script with hash %x for tx %x", scriptType, scriptHash, txHash)
+	// Script saved successfully
 
 	// Cache existence
 	sc.mutex.Lock()
@@ -282,7 +282,6 @@ func (sp *ScriptProcessor) ProcessNativeScripts(ctx context.Context, tx *gorm.DB
 		}
 	default:
 		// Try reflection to see what methods are available
-		log.Printf("[DEBUG] WitnessSet type %T does not implement NativeScripts() method", witnessSet)
 	}
 	return nil
 }
@@ -293,7 +292,6 @@ func (sp *ScriptProcessor) ProcessPlutusV1Scripts(ctx context.Context, tx *gorm.
 	case interface{ PlutusV1Scripts() [][]byte }:
 		scripts := ws.PlutusV1Scripts()
 		if len(scripts) > 0 {
-			log.Printf("[DEBUG] Found %d PlutusV1 scripts for tx %x", len(scripts), txHash)
 		}
 		for _, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "plutus_v1", nil); err != nil {
@@ -311,7 +309,6 @@ func (sp *ScriptProcessor) ProcessPlutusV2Scripts(ctx context.Context, tx *gorm.
 	case interface{ PlutusV2Scripts() [][]byte }:
 		scripts := ws.PlutusV2Scripts()
 		if len(scripts) > 0 {
-			log.Printf("[DEBUG] Found %d PlutusV2 scripts for tx %x", len(scripts), txHash)
 		}
 		for _, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "plutus_v2", nil); err != nil {
@@ -340,7 +337,6 @@ func (sp *ScriptProcessor) ProcessPlutusV3Scripts(ctx context.Context, tx *gorm.
 
 // processScript processes a single script
 func (sp *ScriptProcessor) processScript(tx *gorm.DB, txHash []byte, script interface{}, scriptType string, additionalData map[string]interface{}) error {
-	log.Printf("[DEBUG] Processing %s script for tx %x", scriptType, txHash)
 	
 	var scriptBytes []byte
 	var scriptHash []byte
@@ -654,20 +650,14 @@ func (sp *ScriptProcessor) ClearCache() {
 func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transaction interface{}, blockType uint) error {
 	// Only log for smart contract eras
 	if blockType >= 5 { // Alonzo or later
-		log.Printf("[SCRIPT_DEBUG] ProcessTransaction called for tx %x, blockType %d, transaction type: %T", txHash, blockType, transaction)
 		
 		// Check if it's a concrete type
-		switch t := transaction.(type) {
+		switch transaction.(type) {
 		case *ledger.AlonzoTransaction:
-			log.Printf("[SCRIPT_DEBUG] Got AlonzoTransaction pointer")
 		case ledger.AlonzoTransaction:
-			log.Printf("[SCRIPT_DEBUG] Got AlonzoTransaction value")
 		case *ledger.BabbageTransaction:
-			log.Printf("[SCRIPT_DEBUG] Got BabbageTransaction pointer")
 		case ledger.BabbageTransaction:
-			log.Printf("[SCRIPT_DEBUG] Got BabbageTransaction value")
 		default:
-			log.Printf("[SCRIPT_DEBUG] Got unknown transaction type: %T", t)
 		}
 	}
 	// Extract witness set if available
@@ -696,10 +686,8 @@ func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transa
 		switch txWithWitness := transaction.(type) {
 		case interface{ WitnessSet() interface{} }:
 			witnessSet = txWithWitness.WitnessSet()
-			log.Printf("[DEBUG] Got witness set via WitnessSet() for tx %x", txHash)
 		case interface{ Witnesses() interface{} }:
 			witnessSet = txWithWitness.Witnesses()
-			log.Printf("[DEBUG] Got witness set via Witnesses() for tx %x", txHash)
 		default:
 			// For debugging, let's see what type we're actually getting
 			log.Printf("[TRANSACTION_TYPE] No witness methods found. Transaction type: %T for tx %x", transaction, txHash)

@@ -33,6 +33,9 @@ func GetDashboardConfig() *DashboardConfig {
 		DetailedLog: false,
 	}
 
+	log.Printf("[Dashboard] Getting config - DASHBOARD_TYPE=%s, WEB_PORT=%s", 
+		os.Getenv("DASHBOARD_TYPE"), os.Getenv("WEB_PORT"))
+
 	// Check DASHBOARD_TYPE env var
 	if dashType := os.Getenv("DASHBOARD_TYPE"); dashType != "" {
 		switch dashType {

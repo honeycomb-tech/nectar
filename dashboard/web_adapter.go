@@ -52,90 +52,25 @@ func (w *WebDashboardAdapter) UpdatePerformance(blocksPerSec string, currentBloc
 	totalBlocks int64, currentSlot, tipSlot uint64, memoryUsage, cpuUsage string,
 	runtime time.Duration, currentEra string) {
 	
-	// Update all performance metrics
+	// Update web server with performance data
+	// The web server expects: slot, tip uint64, blocksPerSec float64, totalBlocks int64, mem, cpu string
 	w.server.UpdatePerformance(currentSlot, tipSlot, currentBlocksPerSec, totalBlocks, memoryUsage, cpuUsage)
-	
-	// Update era progress based on slot
-	w.updateAllEraProgress(currentSlot)
 }
 
-// AddActivity adds an activity to the feed
+// AddActivity adds an activity to the dashboard
 func (w *WebDashboardAdapter) AddActivity(actType, message string) {
+	// The web server expects a data map as the third parameter
 	w.server.AddActivity(actType, message, nil)
 }
 
-// UpdateErrors updates error information
+// UpdateErrors updates error statistics
 func (w *WebDashboardAdapter) UpdateErrors(totalErrors int, categorizedErrors []string) {
-	// This is called periodically with the full error list
-	// The web server handles this internally through its own error tracking
+	// The web server doesn't have a direct UpdateErrors method
+	// Errors are added individually via AddError
+	// This is just for compatibility with the Dashboard interface
 }
 
-// AddError adds a new error with proper type information
+// AddError adds a new error to the dashboard
 func (w *WebDashboardAdapter) AddError(errorType, component, message string) {
-	// Forward the error with its proper type to the web server
 	w.server.AddError(errorType, component, message)
-}
-
-// updateAllEraProgress calculates and updates progress for all eras based on current slot
-func (w *WebDashboardAdapter) updateAllEraProgress(currentSlot uint64) {
-	// Byron
-	byronProgress := 0.0
-	if currentSlot >= 4492800 {
-		byronProgress = 100.0
-	} else {
-		byronProgress = (float64(currentSlot) / 4492799.0) * 100
-	}
-	w.server.UpdateEraProgress("Byron", byronProgress)
-
-	// Shelley
-	shelleyProgress := 0.0
-	if currentSlot >= 16588738 {
-		shelleyProgress = 100.0
-	} else if currentSlot >= 4492800 {
-		shelleyProgress = ((float64(currentSlot) - 4492800) / (16588738 - 4492800)) * 100
-	}
-	w.server.UpdateEraProgress("Shelley", shelleyProgress)
-
-	// Allegra
-	allegraProgress := 0.0
-	if currentSlot >= 23068794 {
-		allegraProgress = 100.0
-	} else if currentSlot >= 16588738 {
-		allegraProgress = ((float64(currentSlot) - 16588738) / (23068794 - 16588738)) * 100
-	}
-	w.server.UpdateEraProgress("Allegra", allegraProgress)
-
-	// Mary
-	maryProgress := 0.0
-	if currentSlot >= 39916797 {
-		maryProgress = 100.0
-	} else if currentSlot >= 23068794 {
-		maryProgress = ((float64(currentSlot) - 23068794) / (39916797 - 23068794)) * 100
-	}
-	w.server.UpdateEraProgress("Mary", maryProgress)
-
-	// Alonzo
-	alonzoProgress := 0.0
-	if currentSlot >= 72316797 {
-		alonzoProgress = 100.0
-	} else if currentSlot >= 39916797 {
-		alonzoProgress = ((float64(currentSlot) - 39916797) / (72316797 - 39916797)) * 100
-	}
-	w.server.UpdateEraProgress("Alonzo", alonzoProgress)
-
-	// Babbage
-	babbageProgress := 0.0
-	if currentSlot >= 133660800 {
-		babbageProgress = 100.0
-	} else if currentSlot >= 72316797 {
-		babbageProgress = ((float64(currentSlot) - 72316797) / (133660800 - 72316797)) * 100
-	}
-	w.server.UpdateEraProgress("Babbage", babbageProgress)
-
-	// Conway
-	conwayProgress := 0.0
-	if currentSlot >= 133660800 {
-		conwayProgress = 5.0 // Early stage
-	}
-	w.server.UpdateEraProgress("Conway", conwayProgress)
 }
