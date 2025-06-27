@@ -252,6 +252,10 @@ type ReferenceAlignedIndexer struct {
 
 	// Dashboard interface - supports multiple dashboard types
 	dashboard dashboard.Dashboard
+	
+	// Era tracking for dynamic configuration
+	currentEpoch      atomic.Uint64
+	currentEraConfig  *processors.EraConfig
 
 	// Sync mode tracking
 	isBulkSync      atomic.Bool
@@ -760,6 +764,9 @@ func NewReferenceAlignedIndexer(db *gorm.DB, cfg *config.Config) (*ReferenceAlig
 		},
 
 		// Parallel processing happens at transaction level, not block level
+		
+		// Initialize era configuration
+		currentEraConfig: processors.GetEraConfig(0), // Start with Byron
 	}
 
 	// Enable dashboard by default (unless disabled by env)

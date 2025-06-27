@@ -28,18 +28,6 @@ const (
 	BlockTypeAlonzo    = 5
 	BlockTypeBabbage   = 6
 	BlockTypeConway    = 7
-
-	// Batch sizes for bulk operations - reduced for Shelley era complexity
-	TX_OUT_BATCH_SIZE      = 1000   // Optimized for consistent performance
-	TX_IN_BATCH_SIZE       = 1000   // Smaller batches = faster commits
-	MULTI_ASSET_BATCH_SIZE = 500    // Reduced for complex asset operations
-)
-
-// Optimal batch sizes for different database operations
-const (
-	TRANSACTION_BATCH_SIZE = 500    // Smaller batches for faster processing
-	METADATA_BATCH_SIZE    = 500    // Quick metadata commits
-	BLOCK_BATCH_SIZE       = 100    // Process blocks quickly
 )
 
 // StateQueryService interface for reward calculation
@@ -59,12 +47,13 @@ type BlockProcessor struct {
 	metadataProcessor    *MetadataProcessor
 	governanceProcessor  *GovernanceProcessor
 	scriptProcessor      *ScriptProcessor
-	metadataFetcher      MetadataFetcher
 	adaPotsCalculator    *AdaPotsCalculator
 	epochParamsProvider  *EpochParamsProvider
 	stateQueryService    StateQueryService
 	txSemaphore          chan struct{} // Limits concurrent transaction processing
 	slotLeaderCache      map[string][]byte // Cache slot leader hashes to avoid DB lookups
+	currentEraConfig     *EraConfig // Current era configuration
+	currentEpoch         uint64     // Track current epoch for era detection
 }
 
 // NewBlockProcessor creates a new block processor
@@ -84,6 +73,8 @@ func NewBlockProcessor(db *gorm.DB) *BlockProcessor {
 		epochParamsProvider:  NewEpochParamsProvider(db),
 		txSemaphore:          make(chan struct{}, 32), // Increased to 32 for our powerful system
 		slotLeaderCache:      make(map[string][]byte),
+		currentEraConfig:     GetEraConfig(0), // Start with Byron config
+		currentEpoch:         0,
 	}
 	return bp
 }
@@ -92,6 +83,12 @@ func NewBlockProcessor(db *gorm.DB) *BlockProcessor {
 func (bp *BlockProcessor) ProcessBlock(ctx context.Context, block ledger.Block, blockType uint) error {
 	slotNumber := block.Header().SlotNumber()
 	blockNumber := block.BlockNumber()
+	epochNo := bp.getEpochForSlot(slotNumber, blockType)
+	
+	// Check if we need to update era configuration
+	if uint64(epochNo) != bp.currentEpoch {
+		bp.updateEraConfig(epochNo)
+	}
 	
 	// Log block processing start
 	if blockNumber % 100 == 0 {
@@ -470,7 +467,7 @@ func (bp *BlockProcessor) processTransactionBatch(ctx context.Context, tx *gorm.
 	}
 
 	// Batch insert transactions with fast duplicate handling
-	if err := database.FastCreateInBatches(tx, txBatch, TRANSACTION_BATCH_SIZE); err != nil {
+	if err := database.FastCreateInBatches(tx, txBatch, bp.currentEraConfig.TxBatchSize); err != nil {
 		return fmt.Errorf("failed to batch insert transactions: %w", err)
 	}
 
@@ -570,7 +567,7 @@ func (bp *BlockProcessor) processTransactionInputs(ctx context.Context, tx *gorm
 	// Batch insert inputs with fast duplicate handling
 	// Use retry operation for transient errors
 	err := database.RetryOperation(func() error {
-		return database.FastCreateInBatches(tx, inputBatch, TX_IN_BATCH_SIZE)
+		return database.FastCreateInBatches(tx, inputBatch, bp.currentEraConfig.TxInBatchSize)
 	})
 	
 	if err != nil {
@@ -697,9 +694,9 @@ func (bp *BlockProcessor) processTransactionOutputs(ctx context.Context, tx *gor
 
 	// Batch insert outputs
 	// Use larger batch size if we have a lot of outputs
-	batchSize := TX_OUT_BATCH_SIZE
-	if len(outputBatch) > TX_OUT_BATCH_SIZE*2 {
-		batchSize = TX_OUT_BATCH_SIZE * 2 // Double batch size for large sets
+	batchSize := bp.currentEraConfig.TxOutBatchSize
+	if len(outputBatch) > bp.currentEraConfig.TxOutBatchSize*2 {
+		batchSize = bp.currentEraConfig.TxOutBatchSize * 2 // Double batch size for large sets
 	}
 
 	// Use retry operation for transient errors
@@ -1324,7 +1321,6 @@ func (bp *BlockProcessor) extractStakeAddress(addr ledger.Address) bool {
 // SetMetadataFetcher sets the metadata fetcher on the block processor
 func (bp *BlockProcessor) SetMetadataFetcher(fetcher MetadataFetcher) {
 	// Set the fetcher on our processors
-	bp.metadataFetcher = fetcher
 	if bp.certificateProcessor != nil {
 		bp.certificateProcessor.SetMetadataFetcher(fetcher)
 	}
@@ -1350,6 +1346,26 @@ func isZeroHash(hash [32]byte) bool {
 		}
 	}
 	return true
+}
+
+// updateEraConfig updates the era configuration when epoch changes
+func (bp *BlockProcessor) updateEraConfig(epochNo uint32) {
+	oldEra := GetEraName(bp.currentEpoch)
+	newEra := GetEraName(uint64(epochNo))
+	
+	// Update configuration
+	bp.currentEpoch = uint64(epochNo)
+	bp.currentEraConfig = GetEraConfig(uint64(epochNo))
+	
+	// Log era transition
+	if oldEra != newEra {
+		log.Printf("[ERA TRANSITION] Entering %s era at epoch %d", newEra, epochNo)
+		log.Printf("[ERA CONFIG] Workers: %d, TxBatch: %d, TxOutBatch: %d, FetchRange: %d",
+			bp.currentEraConfig.WorkerCount,
+			bp.currentEraConfig.TxBatchSize,
+			bp.currentEraConfig.TxOutBatchSize,
+			bp.currentEraConfig.FetchRangeSize)
+	}
 }
 
 // processCollateralInputs processes collateral inputs for a transaction
