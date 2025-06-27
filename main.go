@@ -605,11 +605,28 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Apply configuration to global variables
-	DB_CONNECTION_POOL = cfg.Database.ConnectionPool
-	WORKER_COUNT = cfg.Performance.WorkerCount
+	// Get active performance configuration (start with epoch 0, will update dynamically)
+	activeConfig := cfg.Performance.GetActiveConfig(0)
+	
+	// Log system limits
+	log.Printf("[CONFIG] System limits: max_workers=%d, max_connections=%d, max_batch=%d, max_queue=%d",
+		cfg.Performance.MaxWorkers, cfg.Performance.MaxConnections, 
+		cfg.Performance.MaxBatchSize, cfg.Performance.MaxQueueSize)
+	log.Printf("[CONFIG] Optimization mode: %s", cfg.Performance.OptimizationMode)
+	
+	// Log active configuration
+	log.Printf("[CONFIG] Active configuration (%s):", activeConfig.Source)
+	log.Printf("[CONFIG]   Workers: %d", activeConfig.Workers)
+	log.Printf("[CONFIG]   Connections: %d", activeConfig.Connections)
+	log.Printf("[CONFIG]   Batch size: %d", activeConfig.BatchSize)
+	log.Printf("[CONFIG]   Queue size: %d", activeConfig.QueueSize)
+	log.Printf("[CONFIG]   Fetch range: %d", activeConfig.FetchRange)
+	
+	// Apply active configuration to global variables
+	DB_CONNECTION_POOL = activeConfig.Connections / activeConfig.Workers
+	WORKER_COUNT = activeConfig.Workers
 	STATS_INTERVAL = cfg.Performance.StatsInterval
-	BULK_FETCH_RANGE_SIZE = cfg.Performance.BulkFetchRangeSize
+	BULK_FETCH_RANGE_SIZE = activeConfig.FetchRange
 	BULK_MODE_ENABLED = cfg.Performance.BulkModeEnabled
 	DefaultCardanoNodeSocket = cfg.Cardano.NodeSocket
 	

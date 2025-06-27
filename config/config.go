@@ -47,11 +47,30 @@ type RewardsConfig struct {
 
 // PerformanceConfig holds performance tuning settings
 type PerformanceConfig struct {
-	WorkerCount        int           `toml:"worker_count"`
-	BulkModeEnabled    bool          `toml:"bulk_mode_enabled"`
-	BulkFetchRangeSize int           `toml:"bulk_fetch_range_size"`
-	StatsInterval      time.Duration `toml:"stats_interval"`
-	BlockQueueSize     int           `toml:"block_queue_size"`
+	// System Capabilities (maximums)
+	MaxWorkers      int `toml:"max_workers"`
+	MaxConnections  int `toml:"max_connections"`
+	MaxBatchSize    int `toml:"max_batch_size"`
+	MaxQueueSize    int `toml:"max_queue_size"`
+	
+	// Optimization Strategy
+	OptimizationMode string `toml:"optimization_mode"` // "auto", "manual", "aggressive", "conservative"
+	
+	// Manual Settings (only used when optimization_mode = "manual")
+	ManualWorkers    int `toml:"manual_workers"`
+	ManualBatchSize  int `toml:"manual_batch_size"`
+	ManualQueueSize  int `toml:"manual_queue_size"`
+	ManualFetchRange int `toml:"manual_fetch_range"`
+	
+	// Other settings
+	BulkModeEnabled bool          `toml:"bulk_mode_enabled"`
+	StatsInterval   time.Duration `toml:"stats_interval"`
+	BlockfetchTimeout time.Duration `toml:"blockfetch_timeout"`
+	
+	// Legacy support (will be migrated)
+	WorkerCount        int `toml:"worker_count"`
+	BulkFetchRangeSize int `toml:"bulk_fetch_range_size"`
+	BlockQueueSize     int `toml:"block_queue_size"`
 }
 
 // DashboardConfig holds dashboard settings
@@ -277,4 +296,174 @@ func getEnvDuration(key string) time.Duration {
 // Marshal converts a Config struct to TOML bytes
 func Marshal(cfg *Config) ([]byte, error) {
 	return toml.Marshal(cfg)
+}
+
+// ActivePerformanceConfig represents the currently active settings
+type ActivePerformanceConfig struct {
+	Workers      int
+	Connections  int
+	BatchSize    int
+	QueueSize    int
+	FetchRange   int
+	Source       string // "auto (Byron)", "manual", etc.
+}
+
+// GetActiveConfig returns the active configuration based on mode and epoch
+func (pc *PerformanceConfig) GetActiveConfig(epochNo uint64) *ActivePerformanceConfig {
+	// Handle legacy migration first
+	pc.migrateLegacyConfig()
+	
+	switch pc.OptimizationMode {
+	case "manual":
+		return pc.getManualConfig()
+	case "aggressive":
+		return pc.getAggressiveConfig()
+	case "conservative":
+		return pc.getConservativeConfig()
+	case "auto", "":
+		return pc.getEraAwareConfig(epochNo)
+	default:
+		// Default to auto if unknown mode
+		return pc.getEraAwareConfig(epochNo)
+	}
+}
+
+// migrateLegacyConfig migrates old config values to new structure
+func (pc *PerformanceConfig) migrateLegacyConfig() {
+	// If new values not set but legacy values exist, migrate them
+	if pc.MaxWorkers == 0 && pc.WorkerCount > 0 {
+		pc.MaxWorkers = pc.WorkerCount
+		pc.ManualWorkers = pc.WorkerCount
+	}
+	if pc.MaxQueueSize == 0 && pc.BlockQueueSize > 0 {
+		pc.MaxQueueSize = pc.BlockQueueSize
+		pc.ManualQueueSize = pc.BlockQueueSize
+	}
+	if pc.MaxBatchSize == 0 && pc.BulkFetchRangeSize > 0 {
+		pc.MaxBatchSize = pc.BulkFetchRangeSize * 2
+		pc.ManualBatchSize = pc.BulkFetchRangeSize
+		pc.ManualFetchRange = pc.BulkFetchRangeSize
+	}
+	
+	// Set defaults if still not set
+	if pc.MaxWorkers == 0 {
+		pc.MaxWorkers = 16
+	}
+	if pc.MaxConnections == 0 {
+		pc.MaxConnections = pc.MaxWorkers * 4
+	}
+	if pc.MaxBatchSize == 0 {
+		pc.MaxBatchSize = 5000
+	}
+	if pc.MaxQueueSize == 0 {
+		pc.MaxQueueSize = 100000
+	}
+	if pc.OptimizationMode == "" {
+		pc.OptimizationMode = "auto"
+	}
+}
+
+// getEraAwareConfig returns era-optimized settings within system limits
+func (pc *PerformanceConfig) getEraAwareConfig(epochNo uint64) *ActivePerformanceConfig {
+	// Import era config logic
+	var workers, batchSize, queueSize, fetchRange int
+	var eraName string
+	
+	// Determine era-specific values
+	switch {
+	case epochNo < 208: // Byron
+		workers = 16
+		batchSize = 2000
+		queueSize = 100000
+		fetchRange = 5000
+		eraName = "Byron"
+	case epochNo < 236: // Shelley
+		workers = 12
+		batchSize = 1000
+		queueSize = 50000
+		fetchRange = 2000
+		eraName = "Shelley"
+	case epochNo < 290: // Allegra/Mary
+		workers = 10
+		batchSize = 800
+		queueSize = 30000
+		fetchRange = 1500
+		eraName = "Allegra/Mary"
+	case epochNo < 365: // Alonzo
+		workers = 8
+		batchSize = 500
+		queueSize = 20000
+		fetchRange = 1000
+		eraName = "Alonzo"
+	default: // Babbage+
+		workers = 6
+		batchSize = 300
+		queueSize = 10000
+		fetchRange = 500
+		eraName = "Babbage"
+	}
+	
+	// Apply system limits
+	workers = min(workers, pc.MaxWorkers)
+	batchSize = min(batchSize, pc.MaxBatchSize)
+	queueSize = min(queueSize, pc.MaxQueueSize)
+	
+	return &ActivePerformanceConfig{
+		Workers:     workers,
+		Connections: min(workers * 4, pc.MaxConnections),
+		BatchSize:   batchSize,
+		QueueSize:   queueSize,
+		FetchRange:  fetchRange,
+		Source:      fmt.Sprintf("auto (%s era)", eraName),
+	}
+}
+
+// getManualConfig returns user-specified manual settings
+func (pc *PerformanceConfig) getManualConfig() *ActivePerformanceConfig {
+	return &ActivePerformanceConfig{
+		Workers:     min(pc.ManualWorkers, pc.MaxWorkers),
+		Connections: min(pc.ManualWorkers * 4, pc.MaxConnections),
+		BatchSize:   min(pc.ManualBatchSize, pc.MaxBatchSize),
+		QueueSize:   min(pc.ManualQueueSize, pc.MaxQueueSize),
+		FetchRange:  pc.ManualFetchRange,
+		Source:      "manual",
+	}
+}
+
+// getAggressiveConfig returns maximum performance settings
+func (pc *PerformanceConfig) getAggressiveConfig() *ActivePerformanceConfig {
+	return &ActivePerformanceConfig{
+		Workers:     pc.MaxWorkers,
+		Connections: pc.MaxConnections,
+		BatchSize:   pc.MaxBatchSize,
+		QueueSize:   pc.MaxQueueSize,
+		FetchRange:  pc.MaxBatchSize,
+		Source:      "aggressive",
+	}
+}
+
+// getConservativeConfig returns safe, stable settings
+func (pc *PerformanceConfig) getConservativeConfig() *ActivePerformanceConfig {
+	return &ActivePerformanceConfig{
+		Workers:     max(4, pc.MaxWorkers / 4),
+		Connections: max(16, pc.MaxConnections / 4),
+		BatchSize:   max(100, pc.MaxBatchSize / 10),
+		QueueSize:   max(1000, pc.MaxQueueSize / 10),
+		FetchRange:  500,
+		Source:      "conservative",
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

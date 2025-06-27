@@ -1360,11 +1360,10 @@ func (bp *BlockProcessor) updateEraConfig(epochNo uint32) {
 	// Log era transition
 	if oldEra != newEra {
 		log.Printf("[ERA TRANSITION] Entering %s era at epoch %d", newEra, epochNo)
-		log.Printf("[ERA CONFIG] Workers: %d, TxBatch: %d, TxOutBatch: %d, FetchRange: %d",
-			bp.currentEraConfig.WorkerCount,
+		log.Printf("[ERA CONFIG] TxBatch: %d, TxOutBatch: %d, AssetBatch: %d",
 			bp.currentEraConfig.TxBatchSize,
 			bp.currentEraConfig.TxOutBatchSize,
-			bp.currentEraConfig.FetchRangeSize)
+			bp.currentEraConfig.AssetBatchSize)
 	}
 }
 
