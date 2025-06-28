@@ -72,7 +72,7 @@ func (sc *ScriptCache) EnsureScript(tx *gorm.DB, txHash []byte, scriptHash []byt
 	if err := tx.Create(&script).Error; err != nil {
 		return fmt.Errorf("failed to create script: %w", err)
 	}
-	
+
 	// Script saved successfully
 
 	// Cache existence
@@ -197,7 +197,7 @@ func (sp *ScriptProcessor) ProcessTransactionScripts(ctx context.Context, tx *go
 	if witnessSet == nil {
 		return nil
 	}
-	
+
 	// Debug: Check what's in the witness set
 	if ws, ok := witnessSet.(interface{ PlutusV1Scripts() [][]byte }); ok {
 		scripts := ws.PlutusV1Scripts()
@@ -277,6 +277,7 @@ func (sp *ScriptProcessor) ProcessPlutusV1Scripts(ctx context.Context, tx *gorm.
 	case interface{ PlutusV1Scripts() [][]byte }:
 		scripts := ws.PlutusV1Scripts()
 		if len(scripts) > 0 {
+			log.Printf("[PLUTUS_V1] Processing %d PlutusV1 scripts for tx %x", len(scripts), txHash)
 		}
 		for _, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "plutus_v1", nil); err != nil {
@@ -294,6 +295,7 @@ func (sp *ScriptProcessor) ProcessPlutusV2Scripts(ctx context.Context, tx *gorm.
 	case interface{ PlutusV2Scripts() [][]byte }:
 		scripts := ws.PlutusV2Scripts()
 		if len(scripts) > 0 {
+			log.Printf("[PLUTUS_V2] Processing %d PlutusV2 scripts for tx %x", len(scripts), txHash)
 		}
 		for _, script := range scripts {
 			if err := sp.processScript(tx, txHash, script, "plutus_v2", nil); err != nil {
@@ -322,7 +324,7 @@ func (sp *ScriptProcessor) ProcessPlutusV3Scripts(ctx context.Context, tx *gorm.
 
 // processScript processes a single script
 func (sp *ScriptProcessor) processScript(tx *gorm.DB, txHash []byte, script interface{}, scriptType string, additionalData map[string]interface{}) error {
-	
+
 	var scriptBytes []byte
 	var scriptHash []byte
 	var scriptJson *string
@@ -569,6 +571,59 @@ func (sp *ScriptProcessor) processRedeemer(tx *gorm.DB, txHash []byte, index int
 	return nil
 }
 
+// ProcessWitnessDatums processes datums from the witness set
+func (sp *ScriptProcessor) ProcessWitnessDatums(ctx context.Context, tx *gorm.DB, txHash []byte, witnessSet interface{}) error {
+	// Try to extract PlutusData from witness set
+	switch ws := witnessSet.(type) {
+	case interface{ PlutusData() []cbor.Value }:
+		datums := ws.PlutusData()
+		if len(datums) == 0 {
+			return nil // No datums to process
+		}
+
+		log.Printf("[DATUM_FOUND] Found %d datums in tx %x", len(datums), txHash)
+
+		for i, datum := range datums {
+			// cbor.Value is not a pointer, so check if it has content
+			if datum.Cbor() == nil {
+				log.Printf("[WARNING] Nil datum CBOR at index %d in tx %x", i, txHash)
+				continue
+			}
+
+			// Get the CBOR bytes of the datum
+			datumBytes := datum.Cbor()
+			if len(datumBytes) == 0 {
+				log.Printf("[WARNING] Empty datum bytes at index %d in tx %x", i, txHash)
+				continue
+			}
+
+			// Calculate datum hash
+			h, err := blake2b.New256(nil)
+			if err != nil {
+				return fmt.Errorf("failed to create blake2b hasher: %w", err)
+			}
+			h.Write(datumBytes)
+			datumHash := h.Sum(nil)
+
+			// Store the datum using the cache
+			if err := sp.datumCache.EnsureDatum(tx, txHash, datumHash, datumBytes); err != nil {
+				sp.errorCollector.ProcessingWarning("ScriptProcessor", "ProcessWitnessDatums",
+					fmt.Sprintf("Failed to store datum %d: %v", i, err),
+					fmt.Sprintf("tx_hash:%x", txHash))
+				continue
+			}
+
+			log.Printf("[DATUM_STORED] Stored datum %d with hash %x for tx %x", i, datumHash, txHash)
+		}
+
+		return nil
+
+	default:
+		// Witness set doesn't support PlutusData (pre-Alonzo)
+		return nil
+	}
+}
+
 // CalculateScriptDataHash calculates the script data hash for a transaction
 func (sp *ScriptProcessor) CalculateScriptDataHash(redeemers []interface{}, datums []interface{}) ([]byte, error) {
 	// This would implement the specific CDDL encoding required for script data hash
@@ -630,7 +685,7 @@ func (sp *ScriptProcessor) ClearCache() {
 func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transaction interface{}, blockType uint) error {
 	// Only log for smart contract eras
 	if blockType >= 5 { // Alonzo or later
-		
+
 		// Check if it's a concrete type
 		switch transaction.(type) {
 		case *ledger.AlonzoTransaction:
@@ -642,7 +697,7 @@ func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transa
 	}
 	// Extract witness set if available
 	var witnessSet interface{}
-	
+
 	// Try to get witness set based on transaction type
 	switch tx := transaction.(type) {
 	case *ledger.AlonzoTransaction:
@@ -679,11 +734,8 @@ func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transa
 		if blockType >= 5 {
 			log.Printf("[WITNESS_FOUND] Transaction %x has witness set in era %d", txHash, blockType)
 		}
-	} else if blockType >= 5 {
-		// Log when witness set is nil in smart contract eras
-		log.Printf("[NO_WITNESS] Transaction %x has NO witness set in era %d", txHash, blockType)
-		
-		// Process scripts
+
+		// Process scripts when we HAVE a witness set
 		if err := sp.ProcessTransactionScripts(context.Background(), tx, txHash, witnessSet); err != nil {
 			return fmt.Errorf("failed to process scripts: %w", err)
 		}
@@ -692,6 +744,16 @@ func (sp *ScriptProcessor) ProcessTransaction(tx *gorm.DB, txHash []byte, transa
 		if err := sp.ProcessRedeemers(context.Background(), tx, txHash, witnessSet); err != nil {
 			return fmt.Errorf("failed to process redeemers: %w", err)
 		}
+
+		// Process witness datums (Alonzo+)
+		if blockType >= 5 { // BlockTypeAlonzo
+			if err := sp.ProcessWitnessDatums(context.Background(), tx, txHash, witnessSet); err != nil {
+				return fmt.Errorf("failed to process witness datums: %w", err)
+			}
+		}
+	} else if blockType >= 5 {
+		// Log when witness set is nil in smart contract eras
+		log.Printf("[NO_WITNESS] Transaction %x has NO witness set in era %d", txHash, blockType)
 	}
 
 	// Process inline datums from outputs (Babbage+)
